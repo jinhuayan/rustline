@@ -1,4 +1,3 @@
-# rust-based-llm-cli 
 # A Rust-Based Local AI Agent CLI
 
 ## Motivation
