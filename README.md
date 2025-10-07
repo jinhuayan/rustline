@@ -1,4 +1,4 @@
-# A Rust-Based Local AI Agent CLI
+# Rustline - A Rust-Based Local AI Agent CLI
 
 ## Motivation
 
