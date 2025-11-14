@@ -1,5 +1,6 @@
 mod app;
 mod agent;
+mod ollama;
 
 #[tokio::main]
 async fn main() {

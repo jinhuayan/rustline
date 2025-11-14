@@ -1,7 +1,9 @@
 use tokio::time::{sleep, Duration};
+use reqwest::Client;
 
 pub struct Agent {
     name: String,
+    htttp: Client,
 }
 
 impl Agent {
@@ -9,6 +11,7 @@ impl Agent {
     pub fn new() -> Self {
         Agent {
             name: "Rustline Agent".to_string(),
+            htttp: Client::new(),
         }
     }
 
@@ -22,7 +25,12 @@ impl Agent {
 
         sleep(Duration::from_millis(100)).await;
 
-        let reply = format!("({}) I heard: {}", self.name, input);
-        Ok(reply)
+        match crate::ollama::chat(&self.htttp, input).await {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                let err_msg = format!("Failed to get response from Ollama: {}\n I heard: {}", e, input);
+                Ok(err_msg)
+            }
+        }
     }
 }
