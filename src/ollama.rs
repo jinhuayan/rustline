@@ -1,8 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-const OLLAMA_CHAT_URL: &str = "http://localhost:11434/api/chat";
-const DEFAULT_MODEL: &str = "gemma3";
 
 #[derive(Serialize)]
 struct ChatRequest {
@@ -32,15 +30,18 @@ struct ChatMessage {
 pub async fn chat_with_history(
     client: &Client,
     messages: &[Message],
+    base_url: &str,
+    model: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let url = format!("{}/api/chat", base_url);
     let req_body = ChatRequest {
-        model: DEFAULT_MODEL.to_string(),
+        model: model.to_string(),
         messages: messages.to_vec(),
         stream: false,
     };
 
     let resp = client
-        .post(OLLAMA_CHAT_URL)
+        .post(url)
         .json(&req_body)
         .send()
         .await?;

@@ -1,15 +1,18 @@
 use reqwest::Client;
+
 use crate::ollama::{self, Message};
+use crate::config::Config;
 
 pub struct Agent {
     name: String,
     htttp: Client,
     history: Vec<Message>,
+    config: Config,
 }
 
 impl Agent {
 
-    pub fn new() -> Self {
+    pub fn new(config:Config) -> Self {
         let mut history = Vec::new();
 
         history.push(Message {
@@ -22,7 +25,24 @@ impl Agent {
             name: "Rustline Agent".to_string(),
             htttp: Client::new(),
             history,
+            config,
         }
+    }
+
+    /// Reset the conversation history.
+    pub fn reset(&mut self) {
+        self.history.clear();
+        self.history.push(Message {
+            role: "system".to_string(),
+            content: "You are Rustline, a helpful local coding & CLI assistant. \
+                    Answer concisely and clearly unless the user asks for more detail."
+                .to_string(),
+        });
+    }
+
+    /// Change the model name at runtime.
+    pub fn set_model(&mut self, model: String) {
+        self.config.model = model;
     }
 
     pub async fn handle_message(
@@ -38,7 +58,12 @@ impl Agent {
             content: input.to_string(),
         });
 
-        let response = ollama::chat_with_history(&self.htttp, &self.history).await;
+        let response = ollama::chat_with_history(
+            &self.htttp, 
+            &self.history,
+            &self.config.ollama_base_url,
+            &self.config.model,
+        ).await;
 
         match response {
             Ok(reply) => {

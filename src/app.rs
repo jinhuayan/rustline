@@ -1,15 +1,18 @@
 use std::io::{self, Write};
 
 use crate::agent::Agent;
+use crate::config::Config;
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+
+pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("Rustline - Local AI Agent CLI (async-ready)");
     println!("Type 'exit' or 'quit' to leave.\n");
+    println!("Commands: :reset, :model <name>, :quit\n");
 
-    let mut agent = Agent::new();
+    let mut agent = Agent::new(config);
 
     loop {
-        print!("rustline> ");
+        print!("User> ");
         io::stdout().flush().expect("failed to flush stdout");
 
         let mut input = String::new();
@@ -29,8 +32,33 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
+                // Handle REPL commands starting with ':'
+        if trimmed.starts_with(':') {
+            if trimmed.eq_ignore_ascii_case(":reset") {
+                agent.reset();
+                println!("Conversation history has been reset.");
+                continue;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix(":model") {
+                let new_model = rest.trim();
+                if new_model.is_empty() {
+                    println!("Usage: :model <model_name>");
+                } else {
+                    agent.set_model(new_model.to_string());
+                    println!("Model switched to: {new_model}");
+                }
+                continue;
+            }
+
+            println!("Unknown command: {trimmed}");
+            println!("Available commands: :reset, :model <name>, :quit");
+            continue;
+        }
+
         let reply = agent.handle_message(trimmed).await?;
-        println!("{reply}");
+        println!("Rustline: {reply}");
+        println!("---\n");
     }
 
     Ok(())
