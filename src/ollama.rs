@@ -11,10 +11,10 @@ struct ChatRequest {
     stream: bool,
 }
 
-#[derive(Serialize)]
-struct Message {
-    role: String,
-    content: String,
+#[derive(Clone, Serialize)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
 }
 
 #[derive(Deserialize)]
@@ -27,17 +27,15 @@ struct ChatMessage {
     content: String,
 }
 
-/// Send a single user message to Ollama and get back the response text.
-pub async fn chat(
+
+// Chat history function
+pub async fn chat_with_history(
     client: &Client,
-    user_input: &str,
+    messages: &[Message],
 ) -> Result<String, Box<dyn std::error::Error>> {
     let req_body = ChatRequest {
         model: DEFAULT_MODEL.to_string(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: user_input.to_string(),
-        }],
+        messages: messages.to_vec(),
         stream: false,
     };
 
