@@ -2,6 +2,7 @@ mod app;
 mod agent;
 mod ollama;
 mod config;
+mod tools;
 
 use config::Config;
 

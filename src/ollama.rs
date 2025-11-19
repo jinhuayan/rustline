@@ -29,9 +29,9 @@ struct ChatMessage {
 // Chat history function
 pub async fn chat_with_history(
     client: &Client,
-    messages: &[Message],
     base_url: &str,
     model: &str,
+    messages: &[Message],
 ) -> Result<String, Box<dyn std::error::Error>> {
     let url = format!("{}/api/chat", base_url);
     let req_body = ChatRequest {
