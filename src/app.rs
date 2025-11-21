@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use crate::agent::Agent;
 use crate::config::Config;
 
-
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("Rustline - Local AI Agent CLI (async-ready)");
     println!("Type 'exit' or 'quit' to leave.\n");
@@ -32,7 +31,6 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-                // Handle REPL commands starting with ':'
         if trimmed.starts_with(':') {
             if trimmed.eq_ignore_ascii_case(":reset") {
                 agent.reset();

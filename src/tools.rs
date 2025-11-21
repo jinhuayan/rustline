@@ -1,7 +1,10 @@
 use std::error::Error;
 
+use chrono::Local;
+
 pub type ToolResult = Result<String, Box<dyn Error>>;
 
+/// Common interface for all tools.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -10,7 +13,7 @@ pub trait Tool: Send + Sync {
 
 pub type DynTool = Box<dyn Tool>;
 
-/// Time tool
+/// Time tool: returns current local time (based on system timezone).
 pub struct TimeTool;
 
 impl Tool for TimeTool {
@@ -23,12 +26,15 @@ impl Tool for TimeTool {
     }
 
     fn invoke(&self, _args: &str) -> ToolResult {
-        let now = chrono::Local::now();
-        Ok(format!("Current local time: {}", now.format("%Y-%m-%d %H:%M:%S")))
+        let now = Local::now();
+        Ok(format!(
+            "Current local time: {}",
+            now.format("%Y-%m-%d %H:%M:%S")
+        ))
     }
 }
 
-/// Echo tool
+/// Echo tool: just echoes arguments.
 pub struct EchoTool;
 
 impl Tool for EchoTool {
@@ -45,10 +51,7 @@ impl Tool for EchoTool {
     }
 }
 
-/// All built-in tools
+/// All built-in tools available to the agent.
 pub fn default_tools() -> Vec<DynTool> {
-    vec![
-        Box::new(TimeTool),
-        Box::new(EchoTool),
-    ]
+    vec![Box::new(TimeTool), Box::new(EchoTool)]
 }
