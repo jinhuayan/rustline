@@ -2,11 +2,11 @@
 
 ## Motivation
 
-Developers often want an AI assistant that is **fast, private, and always available**, even when the internet is not. Most AI agents today—such as **LangChain**, **AutoGen**, and **LlamaIndex**—are implemented in **Python** or **JavaScript**, designed primarily for cloud APIs or web applications. These ecosystems are powerful but also **heavyweight**, often requiring virtual environments, external dependencies, and network access for basic tasks.
+Developers often want an AI assistant that is **fast, private, and always available**, even when the internet is not. Most AI agents today—such as **LangChain**, **AutoGen**, and **LlamaIndex** are implemented in **Python** or **JavaScript**, designed primarily for cloud APIs or web applications. These ecosystems are powerful but also **heavyweight**, often requiring virtual environments, external dependencies, and network access for basic tasks.
 
 In contrast, **Rust** offers **speed, safety, and portability**. Rust binaries are self-contained, run natively on all platforms, and start instantly—perfect for building **lightweight, offline AI tools** that don’t need to depend on remote services. However, the Rust ecosystem currently lacks robust **local-first LLM agent frameworks**. While projects like [**aichat**](https://github.com/sigoden/aichat) demonstrate that Rust can drive conversational CLIs, they rely on remote APIs (OpenAI, Claude, etc.).
 
-Our motivation is to explore what a **fully local, Rust-native LLM agent** can look like.  
+Our motivation is to explore what a **fully local, Rust-native LLM agent** can look like.
 We aim to show that Rust is not only capable of serving as an AI interface language but can also form the foundation of an **efficient, secure, and extensible local agent runtime**—connecting directly to **Ollama** for model inference without using the cloud.
 
 This project, named **rust-based-llm-cli**, seeks to fill this gap. It combines:
@@ -32,24 +32,24 @@ The project’s primary goal is to **demonstrate the feasibility and design of l
 ### Key Features
 
 #### 1. Local Model Inference
-- Fully offline operation through **Ollama** integration.  
-- Compatible with popular local models such as **Llama 3** and **Qwen2.5**.  
+- Fully offline operation through **Ollama** integration.
+- Compatible with popular local models such as **Llama 3** and **Qwen2.5**.
 - No dependency on remote servers or API tokens.
 
 #### 2. Context-Aware Sessions
-- Local session memory stored as JSONL files.  
-- Multiple named sessions for different tasks or projects.  
+- Local session memory stored as JSONL files.
+- Multiple named sessions for different tasks or projects.
 
 #### 3. Terminal User Interface (Ratatui)
-- Interactive and responsive terminal UI built with **Ratatui**.  
-- Real-time streaming of model responses. 
+- Interactive and responsive terminal UI built with **Ratatui**.
+- Real-time streaming of model responses.
 
 #### 4. Agentic Tool System
-- Implements a **ReAct-style reasoning loop**: the LLM can decide when to call tools, receive observations, and continue reasoning.  
-- Configurable tool list ensures safe tool execution.  
+- Implements a **ReAct-style reasoning loop**: the LLM can decide when to call tools, receive observations, and continue reasoning.
+- Configurable tool list ensures safe tool execution.
 
 #### 5. Optional MCP Integration
-- Prototype integration for the **Model Context Protocol (MCP)**.  
+- Prototype integration for the **Model Context Protocol (MCP)**.
 - Demonstrates how Rust agents can communicate with external services.
 
 ---
@@ -70,26 +70,26 @@ The team will complete the project over several weeks, with each member focusing
 
 ### Implementation Phases
 
-#### Phase 1 — Core Prototype 
-- Build minimal Ollama CLI connector for streaming output.  
+#### Phase 1 — Core Prototype
+- Build minimal Ollama CLI connector for streaming output.
 - Establish basic single-session chat functionality.
 
 #### Phase 2 — UI & Session System
-- Integrate **Ratatui** to create a live, interactive interface.  
-- Add session management (create, list, rename, switch).  
+- Integrate **Ratatui** to create a live, interactive interface.
+- Add session management (create, list, rename, switch).
 - Display streaming responses and maintain local message logs.
 
 #### Phase 3 — Agentic Tool Framework
-- Define the modular tool registry and basic built-in tools.  
-- Implement the reasoning–action–observation loop for tool use.  
+- Define the modular tool registry and basic built-in tools.
+- Implement the reasoning–action–observation loop for tool use.
 - Display tool calls and outputs in the UI.
 
 #### Phase 4 — HTTP Connector & Configuration
-- Add optional HTTP-based connector to interact with local Ollama daemon.  
+- Add optional HTTP-based connector to interact with local Ollama daemon.
 - Implement tool list configuration, error messages, and safety prompts.
 
 #### Phase 5 — MCP Integration
-- Implement basic Model Context Protocol (MCP) client.  
+- Implement basic Model Context Protocol (MCP) client.
 - Demonstrate editor or tool interoperability.
 
 ---
@@ -98,16 +98,16 @@ The team will complete the project over several weeks, with each member focusing
 
 ### Feasibility
 This project is practical and achievable within the course timeline:
-- Relies only on **stable Rust crates** such as `ratatui`.  
-- **Ollama** provides a unified interface for local inference, removing the need for complex model handling.  
-- The team scope is well-defined, with independent tasks.  
+- Relies only on **stable Rust crates** such as `ratatui`.
+- **Ollama** provides a unified interface for local inference, removing the need for complex model handling.
+- The team scope is well-defined, with independent tasks.
 - The technical challenges are balanced: real-time streaming, file I/O, UI rendering, and tools integration.
 
 ### Expected Deliverables
-- A fully functional **local LLM agent CLI** capable of offline inference.  
-- Clean and documented **Ratatui interface** with real-time response streaming.  
-- Implementation of **tool-calling agentic workflow**.  
-- Comprehensive documentation (setup, usage, and architecture overview).  
+- A fully functional **local LLM agent CLI** capable of offline inference.
+- Clean and documented **Ratatui interface** with real-time response streaming.
+- Implementation of **tool-calling agentic workflow**.
+- Comprehensive documentation (setup, usage, and architecture overview).
 
 ---
 
