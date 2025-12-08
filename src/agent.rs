@@ -66,7 +66,6 @@ enum PlanOutput {
 /// Core “brain” of Rustline.
 /// Keeps config, ReAct tools, and some lightweight history.
 pub struct Agent {
-    name: String,
     http: Client,
     history: Vec<Message>,
     config: Config,
@@ -77,7 +76,6 @@ impl Agent {
     /// Create a new agent with given config.
     pub fn new(config: Config) -> Self {
         Agent {
-            name: "Rustline Agent".to_string(),
             http: Client::new(),
             history: Vec::new(),
             config,
