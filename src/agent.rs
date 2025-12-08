@@ -72,6 +72,17 @@ pub struct Agent {
     tools: Vec<DynTool>,
 }
 
+impl Clone for Agent {
+    fn clone(&self) -> Self {
+        Agent {
+            http: Client::new(),
+            history: self.history.clone(),
+            config: self.config.clone(),
+            tools: tools::default_tools(), // Recreate tools instead of cloning
+        }
+    }
+}
+
 impl Agent {
     /// Create a new agent with given config.
     pub fn new(config: Config) -> Self {
@@ -280,6 +291,46 @@ impl Agent {
 
         println!("[ReAct] Stopped due to max iterations without finishing.");
         Ok("Agent stopped due to max iterations without finishing.".to_string())
+    }
+
+    /// Handle a single user message with streaming support.
+    /// The callback receives each token as it's generated.
+    pub async fn handle_message_stream<F>(
+        &mut self,
+        input: &str,
+        mut on_chunk: F,
+    ) -> Result<String, Box<dyn std::error::Error>>
+    where
+        F: FnMut(&str),
+    {
+        if input.is_empty() {
+            return Ok("You didn't type anything 🤔".to_string());
+        }
+
+        // Manual `!` tools (bypass LLM & ReAct).
+        if let Some(tool_reply) = self.try_run_tool(input)? {
+            on_chunk(&tool_reply);
+            self.history.push(Message {
+                role: "user".to_string(),
+                content: input.to_string(),
+            });
+            self.history.push(Message {
+                role: "assistant".to_string(),
+                content: tool_reply.clone(),
+            });
+            return Ok(tool_reply);
+        }
+
+        let response = self.handle_message(input).await?;
+        
+
+        for chunk in response.chars().collect::<Vec<_>>().chunks(5) {
+            let chunk_str: String = chunk.iter().collect();
+            on_chunk(&chunk_str);
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        }
+        
+        Ok(response)
     }
 }
 
