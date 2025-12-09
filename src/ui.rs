@@ -303,71 +303,130 @@ fn render_welcome_screen(f: &mut Frame) {
 
     let area = f.area();
 
-    // Create a centered layout
+    // Define content sizes
+    let full_info_height: u16 = 15; 
+    let minimal_info_height: u16 = 6; // 4 lines content + 2 border
+    let full_logo_height: u16 = 9;
+    let compact_logo_height: u16 = 4;
+
+    let available_height = area.height;
+
+    let (show_logo, use_compact_logo, use_minimal_info) = if available_height >= full_logo_height + full_info_height + 2 {
+        (true, false, false)
+    } else if available_height >= compact_logo_height + full_info_height + 2 {
+        (true, true, false)
+    } else if available_height >= full_info_height + 2 {
+        (false, false, false) // No logo, full info
+    } else {
+        (false, false, true) // No logo, minimal info
+    };
+
+    let logo_height = if !show_logo {
+        0
+    } else if use_compact_logo {
+        compact_logo_height
+    } else {
+        full_logo_height
+    };
+    
+    let info_height = if use_minimal_info { minimal_info_height } else { full_info_height };
+
+    // Calculate vertical centering
+    let total_content_height = logo_height + info_height;
+    let vertical_pad = area.height.saturating_sub(total_content_height) / 2;
+
+    // Create layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(20),
-            Constraint::Min(15),
-            Constraint::Percentage(20),
+            Constraint::Length(vertical_pad),
+            Constraint::Length(logo_height),
+            Constraint::Length(info_height),
+            Constraint::Min(0),
         ])
         .split(area);
 
-    // ASCII art logo
-    let logo = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  ____            _   _ _            ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(" |  _ \\ _   _ ___| |_| (_)_ __   ___ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(" | |_) | | | / __| __| | | '_ \\ / _ \\", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(" |  _ <| |_| \\__ \\ |_| | | | | |  __/", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(" |_| \\_\\\\__,_|___/\\__|_|_|_| |_|\\___|", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("     A Rust-Based Local AI Agent CLI", Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from(""),
-    ];
+    // Logo content
+    if show_logo {
+        let logo = if use_compact_logo {
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Rustline AI Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled("A Rust-Based Local AI Agent CLI", Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+            ]
+        } else {
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  ____            _   _ _            ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" |  _ \\ _   _ ___| |_| (_)_ __   ___ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" | |_) | | | / __| __| | | '_ \\ / _ \\", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" |  _ <| |_| \\__ \\ |_| | | | | |  __/", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled(" |_| \\_\\\\__,_|___/\\__|_|_|_| |_|\\___|", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("     A Rust-Based Local AI Agent CLI", Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+            ]
+        };
 
-    let logo_para = Paragraph::new(logo)
-        .alignment(Alignment::Center)
-        .block(Block::default());
+        let logo_para = Paragraph::new(logo)
+            .alignment(Alignment::Center)
+            .block(Block::default());
 
-    f.render_widget(logo_para, chunks[1]);
+        f.render_widget(logo_para, chunks[1]);
+    }
 
     // Information section
-    let info = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("✨ Features:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from("Fully offline operation with Ollama"),
-        Line::from("Real-time streaming responses"),
-        Line::from("ReAct-style reasoning with tool execution"),
-        Line::from("Context-aware conversations"),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Quick Start:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from("Press Enter to begin chatting"),
-        Line::from("Type !tools to see available tools"),
-        Line::from("Press Ctrl+C or Esc to quit"),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(Color::Gray)),
-            Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled(" to start...", Style::default().fg(Color::Gray)),
-        ]),
-    ];
+    let info = if use_minimal_info {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Rustline AI Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from("Press Enter to start"),
+            Line::from("Ctrl+C to quit"),
+        ]
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("✨ Features:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from("Fully offline operation with Ollama"),
+            Line::from("Real-time streaming responses"),
+            Line::from("ReAct-style reasoning with tool execution"),
+            Line::from("Context-aware conversations"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Quick Start:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from("Press Enter to begin chatting"),
+            Line::from("Type !tools to see available tools"),
+            Line::from("Press Ctrl+C or Esc to quit"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press ", Style::default().fg(Color::Gray)),
+                Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(" to start...", Style::default().fg(Color::Gray)),
+            ]),
+        ]
+    };
 
     let info_para = Paragraph::new(info)
         .alignment(Alignment::Center)
@@ -379,13 +438,16 @@ fn render_welcome_screen(f: &mut Frame) {
                 .title_alignment(Alignment::Center),
         );
 
-    // Calculate centered position for info box
+    // Calculate horizontal centering for info box
+    let info_width = 60;
+    let horizontal_pad = area.width.saturating_sub(info_width) / 2;
+    
     let info_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(15),
-            Constraint::Percentage(70),
-            Constraint::Percentage(15),
+            Constraint::Length(horizontal_pad),
+            Constraint::Min(40), // Minimum width for content
+            Constraint::Length(horizontal_pad),
         ])
         .split(chunks[2]);
 
