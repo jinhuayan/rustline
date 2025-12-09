@@ -176,9 +176,15 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                                 let tx_clone = tx.clone();
                                 let mut agent_clone = agent.clone();
                                 tokio::spawn(async move {
-                                    match agent_clone.handle_message_stream(&user_input, |chunk| {
-                                        let _ = tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
-                                    }).await {
+                                    match agent_clone.handle_message_stream(
+                                        &user_input, 
+                                        |chunk| {
+                                            let _ = tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
+                                        },
+                                        |_think| {
+                                            // TODO: handle think
+                                        }
+                                    ).await {
                                         Ok(response) => {
                                             let _ = tx_clone.send(StreamEvent::Done(Ok(response)));
                                         }
