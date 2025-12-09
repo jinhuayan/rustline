@@ -1,4 +1,6 @@
 use reqwest::Client;
+use tokio::time::{sleep, Duration};
+use std::time::Instant;
 
 use crate::config::Config;
 use crate::ollama;
@@ -208,9 +210,19 @@ impl Agent {
         let question = input.to_string();
         let mut steps: Vec<AgentStep> = Vec::new();
         let max_iterations = 5;
+        let mut total_thinking: std::time::Duration = std::time::Duration::from_secs(0);
 
+        println!("\n[ReAct] Starting reasoning loop for question: {question}");
+
+        for iter in 0..max_iterations {
+            println!("[ReAct] Iteration {}", iter + 1);
+            // time the planning call so we can report how long the model thought
+            let start = Instant::now();
         for _ in 0..max_iterations {
             let plan = self.plan_once(&question, &steps).await?;
+            let elapsed = start.elapsed();
+            total_thinking += elapsed;
+            println!("[Timing] Planning took {:.3} seconds", elapsed.as_secs_f64());
 
             match plan {
                 PlanOutput::FinalAnswer { thought, answer } => {
