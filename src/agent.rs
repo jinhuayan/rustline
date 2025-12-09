@@ -1,5 +1,4 @@
 use reqwest::Client;
-use tokio::time::{sleep, Duration};
 
 use crate::config::Config;
 use crate::ollama;
@@ -210,14 +209,7 @@ impl Agent {
         let mut steps: Vec<AgentStep> = Vec::new();
         let max_iterations = 5;
 
-        println!("\n[ReAct] Starting reasoning loop for question: {question}");
-
-        for iter in 0..max_iterations {
-            println!("[ReAct] Iteration {}", iter + 1);
-
-            // small delay just so we see the loop
-            sleep(Duration::from_millis(50)).await;
-
+        for _ in 0..max_iterations {
             let plan = self.plan_once(&question, &steps).await?;
 
             match plan {
@@ -295,13 +287,15 @@ impl Agent {
 
     /// Handle a single user message with streaming support.
     /// The callback receives each token as it's generated.
-    pub async fn handle_message_stream<F>(
+    pub async fn handle_message_stream<F, G>(
         &mut self,
         input: &str,
         mut on_chunk: F,
+        mut on_think: G,
     ) -> Result<String, Box<dyn std::error::Error>>
     where
         F: FnMut(&str),
+        G: FnMut(&str),
     {
         if input.is_empty() {
             return Ok("You didn't type anything 🤔".to_string());
@@ -321,16 +315,88 @@ impl Agent {
             return Ok(tool_reply);
         }
 
-        let response = self.handle_message(input).await?;
-        
+        let question = input.to_string();
+        let mut steps: Vec<AgentStep> = Vec::new();
+        let max_iterations = 5;
 
-        for chunk in response.chars().collect::<Vec<_>>().chunks(5) {
-            let chunk_str: String = chunk.iter().collect();
-            on_chunk(&chunk_str);
-            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        for _ in 0..max_iterations {
+            let plan = self.plan_once(&question, &steps).await?;
+
+            match plan {
+                PlanOutput::FinalAnswer { thought, answer } => {
+                    if let Some(t) = thought {
+                        on_think(&format!("Thought: {}", t));
+                    }
+                    
+                    // Stream the final answer
+                    for chunk in answer.chars().collect::<Vec<_>>().chunks(5) {
+                        let chunk_str: String = chunk.iter().collect();
+                        on_chunk(&chunk_str);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                    }
+
+                    // store as simple Q/A history
+                    self.history.push(Message {
+                        role: "user".to_string(),
+                        content: question.clone(),
+                    });
+                    self.history.push(Message {
+                        role: "assistant".to_string(),
+                        content: answer.clone(),
+                    });
+
+                    return Ok(answer);
+                }
+                PlanOutput::Action(planned) => {
+                    if let Some(t) = planned.thought {
+                        on_think(&format!("Thought: {}", t));
+                    }
+
+                    let tool_name = planned.tool.trim().to_lowercase();
+
+                    on_think(&format!("Action: Using tool '{}' with input: {}", tool_name, planned.input));
+
+                    let maybe_tool = self
+                        .tools
+                        .iter()
+                        .find(|t| t.name().eq_ignore_ascii_case(&tool_name));
+
+                    let observation = if let Some(tool_impl) = maybe_tool {
+                        match tool_impl.invoke(&planned.input) {
+                            Ok(res) => res,
+                            Err(e) => format!("Tool `{}` error: {}", tool_name, e),
+                        }
+                    } else {
+                        format!(
+                            "Unknown tool `{}`. Available tools: {}",
+                            tool_name,
+                            self.tools
+                                .iter()
+                                .map(|t| t.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    };
+
+                    let short_obs = if observation.len() > 200 {
+                        format!("{}...", &observation[..200])
+                    } else {
+                        observation.clone()
+                    };
+                    on_think(&format!("Observation: {}", short_obs));
+
+                    steps.push(AgentStep {
+                        action: tool_name,
+                        action_input: planned.input,
+                        observation,
+                    });
+                }
+            }
         }
-        
-        Ok(response)
+
+        let msg = "Agent stopped due to max iterations without finishing.";
+        on_think(msg);
+        Ok(msg.to_string())
     }
 }
 
