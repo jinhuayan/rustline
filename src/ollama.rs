@@ -20,6 +20,19 @@ struct ChatResponse {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
+struct StreamChatResponse {
+    message: StreamChatMessage,
+    done: bool,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct StreamChatMessage {
+    content: String,
+}
+
+#[derive(Deserialize)]
 struct ChatMessage {
     content: String,
 }
@@ -51,6 +64,68 @@ pub async fn chat_with_history(
     Ok(chat_resp.message.content)
 }
 
+/// Chat with Ollama using streaming and a callback for each token.
+/// The callback receives each chunk of text as it arrives.
+#[allow(dead_code)]
+pub async fn chat_with_history_stream<F>(
+    client: &Client,
+    base_url: &str,
+    model: &str,
+    messages: &[Message],
+    mut on_chunk: F,
+) -> Result<String, Box<dyn std::error::Error>>
+where
+    F: FnMut(&str),
+{
+    let url = format!("{}/api/chat", base_url.trim_end_matches('/'));
+
+    let req_body = ChatRequest {
+        model: model.to_string(),
+        messages: messages.to_vec(),
+        stream: true, 
+    };
+
+    let mut resp = client.post(&url).json(&req_body).send().await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Ollama HTTP error {status}: {body_text}").into());
+    }
+
+    // Use the reqwest streaming API
+    let mut full_content = String::new();
+    let mut buffer = String::new();
+
+    while let Some(chunk_result) = resp.chunk().await? {
+        let text = String::from_utf8_lossy(&chunk_result);
+        buffer.push_str(&text);
+        
+        // Parse each complete line as JSON
+        while let Some(newline_pos) = buffer.find('\n') {
+            let line = buffer[..newline_pos].to_string();
+            buffer = buffer[newline_pos + 1..].to_string();
+            
+            if line.trim().is_empty() {
+                continue;
+            }
+            
+            if let Ok(stream_resp) = serde_json::from_str::<StreamChatResponse>(&line) {
+                if !stream_resp.message.content.is_empty() {
+                    on_chunk(&stream_resp.message.content);
+                    full_content.push_str(&stream_resp.message.content);
+                }
+                
+                if stream_resp.done {
+                    return Ok(full_content);
+                }
+            }
+        }
+    }
+
+    Ok(full_content)
+}
+
 /// Single-turn helper for ReAct: supply a full prompt string.
 pub async fn chat_single_turn(
     client: &Client,
@@ -64,4 +139,24 @@ pub async fn chat_single_turn(
     }];
 
     chat_with_history(client, base_url, model, &messages).await
+}
+
+/// Single-turn streaming helper for ReAct.
+#[allow(dead_code)]
+pub async fn chat_single_turn_stream<F>(
+    client: &Client,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    on_chunk: F,
+) -> Result<String, Box<dyn std::error::Error>>
+where
+    F: FnMut(&str),
+{
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: prompt.to_string(),
+    }];
+
+    chat_with_history_stream(client, base_url, model, &messages, on_chunk).await
 }
