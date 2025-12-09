@@ -10,16 +10,18 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::Text,
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, ListState},
     Frame, Terminal,
 };
 use tokio::sync::mpsc;
+use textwrap;
 
 use crate::agent::Agent;
 
 #[derive(Debug)]
 pub enum StreamEvent {
     Chunk(String),
+    Thinking(String),
     Done(Result<String, String>),
 }
 
@@ -35,8 +37,12 @@ pub struct App {
     pub waiting: bool,
     /// Content being streamed (for the current message)
     pub streaming_content: String,
+    /// Thinking process content
+    pub thinking_content: String,
     /// Whether to show the welcome screen
     pub show_welcome: bool,
+    /// State for the chat list
+    pub list_state: ListState,
 }
 
 #[derive(Clone)]
@@ -60,7 +66,9 @@ impl App {
             should_quit: false,
             waiting: false,
             streaming_content: String::new(),
-            show_welcome: true,  // Show welcome screen on startup
+            thinking_content: String::new(),
+            show_welcome: true,
+            list_state: ListState::default(),
         }
     }
 
@@ -87,12 +95,18 @@ impl App {
     /// Start streaming a new message
     pub fn start_streaming(&mut self) {
         self.streaming_content.clear();
+        self.thinking_content.clear();
         self.waiting = true;
     }
 
     /// Append chunk to the streaming message
     pub fn append_streaming_chunk(&mut self, chunk: &str) {
         self.streaming_content.push_str(chunk);
+    }
+
+    /// Update thinking content
+    pub fn update_thinking(&mut self, content: &str) {
+        self.thinking_content = content.to_string();
     }
 
     /// Finish streaming and add the complete message to history
@@ -104,6 +118,7 @@ impl App {
             });
             self.streaming_content.clear();
         }
+        self.thinking_content.clear();
         self.waiting = false;
     }
 
@@ -131,7 +146,7 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
 
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         if app.should_quit {
             break;
@@ -141,6 +156,9 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 StreamEvent::Chunk(chunk) => {
                     app.append_streaming_chunk(&chunk);
+                }
+                StreamEvent::Thinking(content) => {
+                    app.update_thinking(&content);
                 }
                 StreamEvent::Done(Ok(_)) => {
                     app.finish_streaming(MessageRole::Assistant);
@@ -181,8 +199,8 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                                         |chunk| {
                                             let _ = tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
                                         },
-                                        |_think| {
-                                            // TODO: handle think
+                                        |think| {
+                                            let _ = tx_clone.send(StreamEvent::Thinking(think.to_string()));
                                         }
                                     ).await {
                                         Ok(response) => {
@@ -224,7 +242,7 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Render the UI
-fn ui(f: &mut Frame, app: &App) {
+fn ui(f: &mut Frame, app: &mut App) {
     // Show welcome screen if enabled
     if app.show_welcome {
         render_welcome_screen(f);
@@ -257,16 +275,50 @@ fn ui(f: &mut Frame, app: &App) {
             };
 
             let content = format!("{}{}", prefix, msg.content);
-            ListItem::new(Text::from(content)).style(style)
+            
+            // Safe width calculation with text wrapping
+            let width = (chunks[0].width as usize).saturating_sub(4).max(1);
+            
+            let wrapped_lines: Vec<String> = textwrap::wrap(&content, width)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            
+            let text = Text::from(wrapped_lines.join("\n"));
+            ListItem::new(text).style(style)
         })
         .collect();
 
-    if app.waiting && !app.streaming_content.is_empty() {
-        let streaming_text = format!("Rustline: {}▊", app.streaming_content);
-        messages.push(
-            ListItem::new(Text::from(streaming_text))
-                .style(Style::default().fg(Color::Green)),
-        );
+    if app.waiting {
+        if !app.thinking_content.is_empty() {
+            let width = (chunks[0].width as usize).saturating_sub(4).max(1);
+            let wrapped_thinking: Vec<String> = textwrap::wrap(&format!("Thinking: {}", app.thinking_content), width)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            messages.push(
+                ListItem::new(Text::from(wrapped_thinking.join("\n")))
+                    .style(Style::default().fg(Color::DarkGray).add_modifier(ratatui::style::Modifier::ITALIC)),
+            );
+        }
+        
+        if !app.streaming_content.is_empty() {
+            let width = (chunks[0].width as usize).saturating_sub(4).max(1);
+            let streaming_text = format!("Rustline: {}▊", app.streaming_content);
+            let wrapped_streaming: Vec<String> = textwrap::wrap(&streaming_text, width)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            messages.push(
+                ListItem::new(Text::from(wrapped_streaming.join("\n")))
+                    .style(Style::default().fg(Color::Green)),
+            );
+        }
+    }
+
+    // Auto-scroll to the bottom
+    if !messages.is_empty() {
+        app.list_state.select(Some(messages.len() - 1));
     }
 
     let messages_list = List::new(messages)
@@ -277,11 +329,11 @@ fn ui(f: &mut Frame, app: &App) {
                 .style(Style::default().fg(Color::White)),
         );
 
-    f.render_widget(messages_list, chunks[0]);
+    f.render_stateful_widget(messages_list, chunks[0], &mut app.list_state);
 
     // Input area
     let input_text = if app.waiting {
-        format!("{} (waiting...)", app.input)
+        format!("{} (thinking...)", app.input)
     } else {
         app.input.clone()
     };
