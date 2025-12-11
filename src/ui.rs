@@ -89,20 +89,11 @@ impl App {
         self.current_time = Self::get_current_time();
     }
 
-    /// Get current time as formatted string
+    /// Get current time as formatted string in local timezone
     fn get_current_time() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // TODO: Use chrono crate for proper timezone formatting
-        let hours = (now / 3600) % 24;
-        let minutes = (now / 60) % 60;
-        let seconds = now % 60;
-
-        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        use chrono::Local;
+        let now = Local::now();
+        now.format("%I:%M:%S %p").to_string()
     }
 
     /// Add a character to the input
@@ -170,7 +161,7 @@ impl WeatherInfo {
         WeatherInfo {
             temperature: "...".to_string(),
             condition: "Loading".to_string(),
-            location: "Toronto, ON".to_string(),
+            location: "Detecting...".to_string(),
             icon: "⏳".to_string(),
         }
     }
@@ -199,20 +190,40 @@ impl WeatherInfo {
         }
     }
 
-    /// Fetch weather data from api
+    /// Fetch weather data from api with automatic location detection
     pub async fn fetch_weather() -> Result<Self, Box<dyn std::error::Error>> {
-        // Toronto coordinates
-        let latitude = 43.65107;
-        let longitude = -79.347015;
+        let client = reqwest::Client::new();
 
-        let url = format!(
-            "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weather_code&temperature_unit=celsius&timezone=America/Toronto",
-            latitude, longitude
+        let location_data: LocationResponse = client
+            .get("http://ip-api.com/json/?fields=status,city,regionName,country,lat,lon,timezone")
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if location_data.status != "success" {
+            return Err("Failed to detect location".into());
+        }
+
+        let latitude = location_data.lat;
+        let longitude = location_data.lon;
+        let location_name = format!(
+            "{}, {}",
+            location_data.city,
+            location_data.region_name
         );
 
-        let client = reqwest::Client::new();
-        let response = client.get(&url).send().await?;
-        let weather_data: OpenMeteoResponse = response.json().await?;
+        let url = format!(
+            "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weather_code&temperature_unit=celsius&timezone={}",
+            latitude, longitude, location_data.timezone
+        );
+
+        let weather_data: OpenMeteoResponse = client
+            .get(&url)
+            .send()
+            .await?
+            .json()
+            .await?;
 
         let temperature = format!("{}°C", weather_data.current.temperature_2m.round() as i32);
         let condition = Self::weather_code_to_condition(weather_data.current.weather_code);
@@ -221,7 +232,7 @@ impl WeatherInfo {
         Ok(WeatherInfo {
             temperature,
             condition,
-            location: "Toronto, ON".to_string(),
+            location: location_name,
             icon: icon.to_string(),
         })
     }
@@ -246,6 +257,19 @@ impl WeatherInfo {
             _ => "Unknown".to_string(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct LocationResponse {
+    status: String,
+    city: String,
+    #[serde(rename = "regionName")]
+    region_name: String,
+    #[allow(dead_code)]
+    country: String,
+    lat: f64,
+    lon: f64,
+    timezone: String,
 }
 
 #[derive(Deserialize)]
@@ -768,11 +792,11 @@ fn render_welcome_screen(f: &mut Frame) {
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Toronto, ON",
+            "Detecting location...",
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(vec![Span::styled(
-            "(Live weather data!)",
+            "(Auto-detected weather!)",
             Style::default().fg(Color::Green),
         )]),
     ];
