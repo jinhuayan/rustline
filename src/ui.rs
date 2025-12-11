@@ -3,16 +3,16 @@ use std::io;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     text::Text,
     widgets::{Block, Borders, List, ListItem, ListState},
-    Frame, Terminal,
 };
+use serde::Deserialize;
 use tokio::sync::mpsc;
-use textwrap;
 
 use crate::agent::Agent;
 
@@ -72,7 +72,7 @@ impl App {
     pub fn new() -> Self {
         App {
             input: String::new(),
-            messages: vec![],  // Start empty, welcome screen shows instead
+            messages: vec![], // Start empty, welcome screen shows instead
             should_quit: false,
             waiting: false,
             streaming_content: String::new(),
@@ -96,19 +96,13 @@ impl App {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         // TODO: Use chrono crate for proper timezone formatting
         let hours = (now / 3600) % 24;
         let minutes = (now / 60) % 60;
         let seconds = now % 60;
-        
-        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
-    }
 
-    /// Update weather information
-    #[allow(dead_code)]
-    pub fn update_weather(&mut self) {
-        // TODO: Implement actual weather API call
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     }
 
     /// Add a character to the input
@@ -174,13 +168,95 @@ impl App {
 impl WeatherInfo {
     pub fn default() -> Self {
         WeatherInfo {
-            // TODO: Fetch real weather data from api 
-            temperature: "-22°C".to_string(),
-            condition: "Sunny".to_string(),
+            temperature: "...".to_string(),
+            condition: "Loading".to_string(),
             location: "Toronto, ON".to_string(),
-            icon: "☀️".to_string(),
+            icon: "⏳".to_string(),
         }
     }
+
+    /// Get weather icon from condition text
+    fn condition_to_icon(condition: &str) -> &'static str {
+        let condition_lower = condition.to_lowercase();
+        if condition_lower.contains("clear") || condition_lower.contains("sunny") {
+            "☀️"
+        } else if condition_lower.contains("cloud") || condition_lower.contains("overcast") {
+            "☁️"
+        } else if condition_lower.contains("partly") || condition_lower.contains("mix") {
+            "⛅"
+        } else if condition_lower.contains("rain") && condition_lower.contains("snow") {
+            "🌨️"
+        } else if condition_lower.contains("rain") || condition_lower.contains("drizzle") {
+            "🌧️"
+        } else if condition_lower.contains("snow") || condition_lower.contains("flurr") {
+            "❄️"
+        } else if condition_lower.contains("thunder") || condition_lower.contains("storm") {
+            "⛈️"
+        } else if condition_lower.contains("fog") || condition_lower.contains("mist") {
+            "🌫️"
+        } else {
+            "🌡️"
+        }
+    }
+
+    /// Fetch weather data from api
+    pub async fn fetch_weather() -> Result<Self, Box<dyn std::error::Error>> {
+        // Toronto coordinates
+        let latitude = 43.65107;
+        let longitude = -79.347015;
+
+        let url = format!(
+            "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,weather_code&temperature_unit=celsius&timezone=America/Toronto",
+            latitude, longitude
+        );
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await?;
+        let weather_data: OpenMeteoResponse = response.json().await?;
+
+        let temperature = format!("{}°C", weather_data.current.temperature_2m.round() as i32);
+        let condition = Self::weather_code_to_condition(weather_data.current.weather_code);
+        let icon = Self::condition_to_icon(&condition);
+
+        Ok(WeatherInfo {
+            temperature,
+            condition,
+            location: "Toronto, ON".to_string(),
+            icon: icon.to_string(),
+        })
+    }
+
+    fn weather_code_to_condition(code: i32) -> String {
+        match code {
+            0 => "Clear Sky".to_string(),
+            1 => "Mainly Clear".to_string(),
+            2 => "Partly Cloudy".to_string(),
+            3 => "Overcast".to_string(),
+            45 | 48 => "Foggy".to_string(),
+            51 | 53 | 55 => "Drizzle".to_string(),
+            56 | 57 => "Freezing Drizzle".to_string(),
+            61 | 63 | 65 => "Rain".to_string(),
+            66 | 67 => "Freezing Rain".to_string(),
+            71 | 73 | 75 => "Snow".to_string(),
+            77 => "Snow Grains".to_string(),
+            80..=82 => "Rain Showers".to_string(),
+            85 | 86 => "Snow Showers".to_string(),
+            95 => "Thunderstorm".to_string(),
+            96 | 99 => "Thunderstorm with Hail".to_string(),
+            _ => "Unknown".to_string(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct OpenMeteoResponse {
+    current: CurrentWeather,
+}
+
+#[derive(Deserialize)]
+struct CurrentWeather {
+    temperature_2m: f64,
+    weather_code: i32,
 }
 
 /// Run the TUI application
@@ -193,13 +269,29 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    
+
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
+
+    // Fetch initial weather data
+    if let Ok(weather) = WeatherInfo::fetch_weather().await {
+        app.weather_info = weather;
+    }
+
+    // Track last weather update time
+    let mut last_weather_update = std::time::Instant::now();
 
     loop {
         // Update time before each render
         app.update_time();
-        
+
+        // Update weather every 5 minutes
+        if last_weather_update.elapsed().as_secs() >= 300 {
+            if let Ok(weather) = WeatherInfo::fetch_weather().await {
+                app.weather_info = weather;
+            }
+            last_weather_update = std::time::Instant::now();
+        }
+
         terminal.draw(|f| ui(f, &mut app))?;
 
         if app.should_quit {
@@ -223,64 +315,66 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        
-        // TODO: Periodically update weather
 
         // Handle input events
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                            app.should_quit = true;
-                        }
-                        KeyCode::Enter => {
-                            if app.show_welcome {
-                                app.dismiss_welcome();
-                            } else if !app.input.is_empty() && !app.waiting {
-                                let user_input = app.input.clone();
-                                app.add_message(MessageRole::User, user_input.clone());
-                                app.clear_input();
-                                app.start_streaming();
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    app.should_quit = true;
+                }
+                KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    app.should_quit = true;
+                }
+                KeyCode::Enter => {
+                    if app.show_welcome {
+                        app.dismiss_welcome();
+                    } else if !app.input.is_empty() && !app.waiting {
+                        let user_input = app.input.clone();
+                        app.add_message(MessageRole::User, user_input.clone());
+                        app.clear_input();
+                        app.start_streaming();
 
-                                // Spawn task to handle agent response with streaming
-                                let tx_clone = tx.clone();
-                                let mut agent_clone = agent.clone();
-                                tokio::spawn(async move {
-                                    match agent_clone.handle_message_stream(
-                                        &user_input, 
-                                        |chunk| {
-                                            let _ = tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
-                                        },
-                                        |think| {
-                                            let _ = tx_clone.send(StreamEvent::Thinking(think.to_string()));
-                                        }
-                                    ).await {
-                                        Ok(response) => {
-                                            let _ = tx_clone.send(StreamEvent::Done(Ok(response)));
-                                        }
-                                        Err(e) => {
-                                            let _ = tx_clone.send(StreamEvent::Done(Err(e.to_string())));
-                                        }
-                                    }
-                                });
+                        // Spawn task to handle agent response with streaming
+                        let tx_clone = tx.clone();
+                        let mut agent_clone = agent.clone();
+                        tokio::spawn(async move {
+                            match agent_clone
+                                .handle_message_stream(
+                                    &user_input,
+                                    |chunk| {
+                                        let _ =
+                                            tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
+                                    },
+                                    |think| {
+                                        let _ =
+                                            tx_clone.send(StreamEvent::Thinking(think.to_string()));
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(response) => {
+                                    let _ = tx_clone.send(StreamEvent::Done(Ok(response)));
+                                }
+                                Err(e) => {
+                                    let _ = tx_clone.send(StreamEvent::Done(Err(e.to_string())));
+                                }
                             }
-                        }
-                        KeyCode::Char(c) => {
-                            app.enter_char(c);
-                        }
-                        KeyCode::Backspace => {
-                            app.delete_char();
-                        }
-                        KeyCode::Esc => {
-                            app.should_quit = true;
-                        }
-                        _ => {}
+                        });
                     }
                 }
+                KeyCode::Char(c) => {
+                    app.enter_char(c);
+                }
+                KeyCode::Backspace => {
+                    app.delete_char();
+                }
+                KeyCode::Esc => {
+                    app.should_quit = true;
+                }
+                _ => {}
             }
         }
     }
@@ -316,33 +410,44 @@ fn ui(f: &mut Frame, app: &mut App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // Status bar
-            Constraint::Min(10),    // Chat history
-            Constraint::Length(3),  // Input area
+            Constraint::Length(5), // Status bar
+            Constraint::Min(10),   // Chat history
+            Constraint::Length(3), // Input area
         ])
         .split(f.area());
 
     // Split top status bar into two cards
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_chunks[0]);
 
     // Left status card - Weather Display
     let weather_lines = vec![
         Line::from(vec![
-            Span::styled(format!("{} ", app.weather_info.icon), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(&app.weather_info.condition, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} ", app.weather_info.icon),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                &app.weather_info.condition,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
-        Line::from(vec![
-            Span::styled(&app.weather_info.temperature, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(&app.weather_info.location, Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            &app.weather_info.temperature,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            &app.weather_info.location,
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let weather_para = Paragraph::new(weather_lines)
@@ -351,8 +456,16 @@ fn ui(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("🌤️  Weather")
-                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(Color::Black)),
         );
 
@@ -361,20 +474,38 @@ fn ui(f: &mut Frame, app: &mut App) {
     // Right status card - Time Display
     let status_icon = if app.waiting { "⚡" } else { "✨" };
     let status_text = if app.waiting { "Processing" } else { "Ready" };
-    let status_color = if app.waiting { Color::Yellow } else { Color::Green };
-    
+    let status_color = if app.waiting {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
     let time_lines = vec![
         Line::from(vec![
             Span::styled("🕐 ", Style::default().fg(Color::Blue)),
-            Span::styled(&app.current_time, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &app.current_time,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
-            Span::styled(format!("{} ", status_icon), Style::default().fg(status_color)),
-            Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} ", status_icon),
+                Style::default().fg(status_color),
+            ),
+            Span::styled(
+                status_text,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
-        Line::from(vec![
-            Span::styled(format!("💬 {} msgs", app.messages.len()), Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            format!("💬 {} msgs", app.messages.len()),
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let time_para = Paragraph::new(time_lines)
@@ -383,8 +514,16 @@ fn ui(f: &mut Frame, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("⏰ Time & Status")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(Color::Black)),
         );
 
@@ -398,52 +537,54 @@ fn ui(f: &mut Frame, app: &mut App) {
         .map(|(idx, msg)| {
             let (style, icon, prefix, decorator_left, decorator_right) = match msg.role {
                 MessageRole::User => (
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                     "👤",
                     "You",
                     "╭─",
-                    "─╮"
+                    "─╮",
                 ),
                 MessageRole::Assistant => (
                     Style::default().fg(Color::Green),
                     "🤖",
                     "Rustline",
                     "┌─",
-                    "─┐"
+                    "─┐",
                 ),
                 MessageRole::System => (
                     Style::default().fg(Color::Yellow),
                     "ℹ️",
                     "System",
                     "┏━",
-                    "━┓"
+                    "━┓",
                 ),
             };
 
             let header = format!("{} {} {} {}", decorator_left, icon, prefix, decorator_right);
-            
+
             // Safe width calculation with text wrapping
             let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
-            
+
             let wrapped_lines: Vec<String> = textwrap::wrap(&msg.content, width)
                 .into_iter()
                 .map(|s| format!("│ {}", s))
                 .collect();
-            
+
             let footer = match msg.role {
                 MessageRole::User => "╰─────────────────────────",
                 MessageRole::Assistant => "└─────────────────────────",
                 MessageRole::System => "┗━━━━━━━━━━━━━━━━━━━━━━━━━",
             };
-            
+
             let mut full_content = vec![header];
             full_content.extend(wrapped_lines);
             full_content.push(footer.to_string());
-            
+
             if idx < app.messages.len() - 1 {
                 full_content.push("".to_string());
             }
-            
+
             let text = Text::from(full_content.join("\n"));
             ListItem::new(text).style(style)
         })
@@ -452,48 +593,55 @@ fn ui(f: &mut Frame, app: &mut App) {
     if app.waiting {
         if !app.thinking_content.is_empty() {
             let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
-            
+
             let thinking_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_idx = app.messages.len() % thinking_frames.len();
             let spinner = thinking_frames[frame_idx];
-            
+
             let header = format!("┌─ {} Thinking... ─┐", spinner);
             let wrapped_thinking: Vec<String> = textwrap::wrap(&app.thinking_content, width)
                 .into_iter()
                 .map(|s| format!("│ {}", s))
                 .collect();
-            
+
             let mut thinking_content = vec![header];
             thinking_content.extend(wrapped_thinking);
             thinking_content.push("└─────────────────────────".to_string());
             thinking_content.push("".to_string());
-            
+
             messages.push(
-                ListItem::new(Text::from(thinking_content.join("\n")))
-                    .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::ITALIC | Modifier::DIM)),
+                ListItem::new(Text::from(thinking_content.join("\n"))).style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::ITALIC | Modifier::DIM),
+                ),
             );
         }
-        
+
         if !app.streaming_content.is_empty() {
             let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
-            
+
             let typing_dots = ["   ", ".  ", ".. ", "..."];
             let dot_idx = (app.streaming_content.len() / 10) % typing_dots.len();
             let dots = typing_dots[dot_idx];
-            
+
             let header = format!("┌─ 🤖 Rustline {} ─┐", dots);
-            let wrapped_streaming: Vec<String> = textwrap::wrap(&format!("{}▊", app.streaming_content), width)
-                .into_iter()
-                .map(|s| format!("│ {}", s))
-                .collect();
-            
+            let wrapped_streaming: Vec<String> =
+                textwrap::wrap(&format!("{}▊", app.streaming_content), width)
+                    .into_iter()
+                    .map(|s| format!("│ {}", s))
+                    .collect();
+
             let mut streaming_msg = vec![header];
             streaming_msg.extend(wrapped_streaming);
             streaming_msg.push("└─────────────────────────".to_string());
-            
+
             messages.push(
-                ListItem::new(Text::from(streaming_msg.join("\n")))
-                    .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                ListItem::new(Text::from(streaming_msg.join("\n"))).style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
             );
         }
     }
@@ -510,16 +658,23 @@ fn ui(f: &mut Frame, app: &mut App) {
     } else {
         "💬 Chat History ✓"
     };
-    
-    let messages_list = List::new(messages)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(chat_title)
-                .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(if app.waiting { Color::Yellow } else { Color::Green }))
-                .style(Style::default().bg(Color::Black)),
-        );
+
+    let messages_list = List::new(messages).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(chat_title)
+            .title_style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .border_style(Style::default().fg(if app.waiting {
+                Color::Yellow
+            } else {
+                Color::Green
+            }))
+            .style(Style::default().bg(Color::Black)),
+    );
 
     f.render_stateful_widget(messages_list, main_chunks[1], &mut app.list_state);
 
@@ -528,34 +683,44 @@ fn ui(f: &mut Frame, app: &mut App) {
             format!("⏳ {} (AI is processing...)", app.input),
             Style::default().fg(Color::Yellow),
             Color::Yellow,
-            "📝 Input [⏸ Waiting for response...]"
+            "📝 Input [⏸ Waiting for response...]",
         )
     } else if app.input.is_empty() {
         (
             "✨ Start typing your message... (Press Enter to send)".to_string(),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
             Color::Cyan,
-            "📝 Input [Ready]"
+            "📝 Input [Ready]",
         )
     } else {
         (
             format!("✍️  {} █", app.input),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             Color::Green,
-            "📝 Input [Typing...]"
+            "📝 Input [Typing...]",
         )
     };
 
-    let input = Paragraph::new(input_display)
-        .style(input_style)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(input_title)
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(input_border_color).add_modifier(Modifier::BOLD))
-                .style(Style::default().bg(Color::Black)),
-        );
+    let input = Paragraph::new(input_display).style(input_style).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(input_title)
+            .title_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .border_style(
+                Style::default()
+                    .fg(input_border_color)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .style(Style::default().bg(Color::Black)),
+    );
 
     f.render_widget(input, main_chunks[2]);
 }
@@ -575,36 +740,41 @@ fn render_welcome_screen(f: &mut Frame) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // Top cards
-            Constraint::Min(15),    // Main welcome content
-            Constraint::Length(3),  // Bottom hint
+            Constraint::Length(7), // Top cards
+            Constraint::Min(15),   // Main welcome content
+            Constraint::Length(3), // Bottom hint
         ])
         .split(area);
 
     // Split top into two feature cards
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_chunks[0]);
-        
+
     // Left card - Weather Preview
     let left_card = vec![
-        Line::from(vec![
-            Span::styled("☀️  Sunny", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled("-22°C", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "⏳  Loading",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "...",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Toronto, ON", Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled("(Live weather soon!)", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Toronto, ON",
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            "(Live weather data!)",
+            Style::default().fg(Color::Green),
+        )]),
     ];
 
     let left_para = Paragraph::new(left_card)
@@ -613,8 +783,16 @@ fn render_welcome_screen(f: &mut Frame) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("🌤️  Weather")
-                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(Color::Black)),
         );
 
@@ -624,18 +802,28 @@ fn render_welcome_screen(f: &mut Frame) {
     let right_card = vec![
         Line::from(vec![
             Span::styled("🕐 ", Style::default().fg(Color::Blue)),
-            Span::styled("--:--:--", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "--:--:--",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
-        Line::from(vec![
-            Span::styled("✨ System Ready", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "✨ System Ready",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("🔒 100% Private", Style::default().fg(Color::Green)),
-        ]),
-        Line::from(vec![
-            Span::styled("📡 Fully Offline", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(vec![Span::styled(
+            "🔒 100% Private",
+            Style::default().fg(Color::Green),
+        )]),
+        Line::from(vec![Span::styled(
+            "📡 Fully Offline",
+            Style::default().fg(Color::Yellow),
+        )]),
     ];
 
     let right_para = Paragraph::new(right_card)
@@ -644,8 +832,16 @@ fn render_welcome_screen(f: &mut Frame) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("⏰ Time & Status")
-                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .style(Style::default().bg(Color::Black)),
         );
 
@@ -654,55 +850,86 @@ fn render_welcome_screen(f: &mut Frame) {
     // Main welcome content
     let welcome_content = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("      ╔═══════════════════════════════════╗", Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(vec![
-            Span::styled("      ║                                   ║", Style::default().fg(Color::Cyan)),
-        ]),
+        Line::from(vec![Span::styled(
+            "      ╔═══════════════════════════════════╗",
+            Style::default().fg(Color::Cyan),
+        )]),
+        Line::from(vec![Span::styled(
+            "      ║                                   ║",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(vec![
             Span::styled("      ║  ", Style::default().fg(Color::Cyan)),
-            Span::styled("🦀 RUSTLINE AI AGENT 🦀", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "🦀 RUSTLINE AI AGENT 🦀",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("      ║", Style::default().fg(Color::Cyan)),
         ]),
-        Line::from(vec![
-            Span::styled("      ║                                   ║", Style::default().fg(Color::Cyan)),
-        ]),
-        Line::from(vec![
-            Span::styled("      ╚═══════════════════════════════════╝", Style::default().fg(Color::Cyan)),
-        ]),
+        Line::from(vec![Span::styled(
+            "      ║                                   ║",
+            Style::default().fg(Color::Cyan),
+        )]),
+        Line::from(vec![Span::styled(
+            "      ╚═══════════════════════════════════╝",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("           Your Personal AI Assistant", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(vec![Span::styled(
+            "           Your Personal AI Assistant",
+            Style::default().fg(Color::Yellow),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("✨ Features:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "✨ Features:",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("   🎯 ", Style::default().fg(Color::Blue)),
-            Span::styled("Smart Context-Aware Responses", Style::default().fg(Color::White)),
+            Span::styled(
+                "Smart Context-Aware Responses",
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::styled("   🔧 ", Style::default().fg(Color::Blue)),
-            Span::styled("ReAct-Style Tool Execution", Style::default().fg(Color::White)),
+            Span::styled(
+                "ReAct-Style Tool Execution",
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::styled("   💬 ", Style::default().fg(Color::Blue)),
-            Span::styled("Natural Conversation Flow", Style::default().fg(Color::White)),
+            Span::styled(
+                "Natural Conversation Flow",
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::styled("   🚀 ", Style::default().fg(Color::Blue)),
-            Span::styled("Lightning Fast Performance", Style::default().fg(Color::White)),
+            Span::styled(
+                "Lightning Fast Performance",
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            Style::default().fg(Color::DarkGray),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("          Press ", Style::default().fg(Color::Gray)),
-            Span::styled("⏎ Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            Span::styled(
+                "⏎ Enter",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            ),
             Span::styled(" to start your journey!", Style::default().fg(Color::Gray)),
         ]),
     ];
@@ -713,7 +940,11 @@ fn render_welcome_screen(f: &mut Frame) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("🌟 Welcome 🌟")
-                .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+                .title_style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .title_alignment(Alignment::Center)
                 .border_style(Style::default().fg(Color::Green))
                 .style(Style::default().bg(Color::Black)),
@@ -722,16 +953,20 @@ fn render_welcome_screen(f: &mut Frame) {
     f.render_widget(welcome_para, main_chunks[1]);
 
     // Bottom hint bar
-    let hint_text = vec![
-        Line::from(vec![
-            Span::styled("💡 Tip: ", Style::default().fg(Color::Yellow)),
-            Span::styled("Press ", Style::default().fg(Color::Gray)),
-            Span::styled("Ctrl+C", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(" or ", Style::default().fg(Color::Gray)),
-            Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled(" to exit anytime", Style::default().fg(Color::Gray)),
-        ]),
-    ];
+    let hint_text = vec![Line::from(vec![
+        Span::styled("💡 Tip: ", Style::default().fg(Color::Yellow)),
+        Span::styled("Press ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "Ctrl+C",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" or ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" to exit anytime", Style::default().fg(Color::Gray)),
+    ])];
 
     let hint_para = Paragraph::new(hint_text)
         .alignment(Alignment::Center)
