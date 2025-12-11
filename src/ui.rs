@@ -394,63 +394,106 @@ fn ui(f: &mut Frame, app: &mut App) {
     let mut messages: Vec<ListItem> = app
         .messages
         .iter()
-        .map(|msg| {
-            let (style, icon, prefix) = match msg.role {
+        .enumerate()
+        .map(|(idx, msg)| {
+            let (style, icon, prefix, decorator_left, decorator_right) = match msg.role {
                 MessageRole::User => (
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     "👤",
-                    "You"
+                    "You",
+                    "╭─",
+                    "─╮"
                 ),
                 MessageRole::Assistant => (
                     Style::default().fg(Color::Green),
                     "🤖",
-                    "Rustline"
+                    "Rustline",
+                    "┌─",
+                    "─┐"
                 ),
                 MessageRole::System => (
                     Style::default().fg(Color::Yellow),
                     "ℹ️",
-                    "System"
+                    "System",
+                    "┏━",
+                    "━┓"
                 ),
             };
 
-            let content = format!("{} {}: {}", icon, prefix, msg.content);
+            let header = format!("{} {} {} {}", decorator_left, icon, prefix, decorator_right);
             
             // Safe width calculation with text wrapping
-            let width = (main_chunks[1].width as usize).saturating_sub(4).max(1);
+            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
             
-            let wrapped_lines: Vec<String> = textwrap::wrap(&content, width)
+            let wrapped_lines: Vec<String> = textwrap::wrap(&msg.content, width)
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(|s| format!("│ {}", s))
                 .collect();
             
-            let text = Text::from(wrapped_lines.join("\n"));
+            let footer = match msg.role {
+                MessageRole::User => "╰─────────────────────────",
+                MessageRole::Assistant => "└─────────────────────────",
+                MessageRole::System => "┗━━━━━━━━━━━━━━━━━━━━━━━━━",
+            };
+            
+            let mut full_content = vec![header];
+            full_content.extend(wrapped_lines);
+            full_content.push(footer.to_string());
+            
+            if idx < app.messages.len() - 1 {
+                full_content.push("".to_string());
+            }
+            
+            let text = Text::from(full_content.join("\n"));
             ListItem::new(text).style(style)
         })
         .collect();
 
     if app.waiting {
         if !app.thinking_content.is_empty() {
-            let width = (main_chunks[1].width as usize).saturating_sub(4).max(1);
-            let wrapped_thinking: Vec<String> = textwrap::wrap(&format!("🧠 Thinking: {}", app.thinking_content), width)
+            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
+            
+            let thinking_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame_idx = app.messages.len() % thinking_frames.len();
+            let spinner = thinking_frames[frame_idx];
+            
+            let header = format!("┌─ {} Thinking... ─┐", spinner);
+            let wrapped_thinking: Vec<String> = textwrap::wrap(&app.thinking_content, width)
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(|s| format!("│ {}", s))
                 .collect();
+            
+            let mut thinking_content = vec![header];
+            thinking_content.extend(wrapped_thinking);
+            thinking_content.push("└─────────────────────────".to_string());
+            thinking_content.push("".to_string());
+            
             messages.push(
-                ListItem::new(Text::from(wrapped_thinking.join("\n")))
-                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                ListItem::new(Text::from(thinking_content.join("\n")))
+                    .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::ITALIC | Modifier::DIM)),
             );
         }
         
         if !app.streaming_content.is_empty() {
-            let width = (main_chunks[1].width as usize).saturating_sub(4).max(1);
-            let streaming_text = format!("🤖 Rustline: {}▊", app.streaming_content);
-            let wrapped_streaming: Vec<String> = textwrap::wrap(&streaming_text, width)
+            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
+            
+            let typing_dots = ["   ", ".  ", ".. ", "..."];
+            let dot_idx = (app.streaming_content.len() / 10) % typing_dots.len();
+            let dots = typing_dots[dot_idx];
+            
+            let header = format!("┌─ 🤖 Rustline {} ─┐", dots);
+            let wrapped_streaming: Vec<String> = textwrap::wrap(&format!("{}▊", app.streaming_content), width)
                 .into_iter()
-                .map(|s| s.to_string())
+                .map(|s| format!("│ {}", s))
                 .collect();
+            
+            let mut streaming_msg = vec![header];
+            streaming_msg.extend(wrapped_streaming);
+            streaming_msg.push("└─────────────────────────".to_string());
+            
             messages.push(
-                ListItem::new(Text::from(wrapped_streaming.join("\n")))
-                    .style(Style::default().fg(Color::Green)),
+                ListItem::new(Text::from(streaming_msg.join("\n")))
+                    .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             );
         }
     }
@@ -460,31 +503,47 @@ fn ui(f: &mut Frame, app: &mut App) {
         app.list_state.select(Some(messages.len() - 1));
     }
 
+    let chat_title = if app.waiting {
+        "💬 Chat History ⚡ (AI is thinking...)"
+    } else if app.messages.is_empty() {
+        "💬 Chat History ✨ (Start a conversation!)"
+    } else {
+        "💬 Chat History ✓"
+    };
+    
     let messages_list = List::new(messages)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("💬 Chat History")
+                .title(chat_title)
                 .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Green))
+                .border_style(Style::default().fg(if app.waiting { Color::Yellow } else { Color::Green }))
                 .style(Style::default().bg(Color::Black)),
         );
 
     f.render_stateful_widget(messages_list, main_chunks[1], &mut app.list_state);
 
-    // Input area with modern styling
-    let input_display = if app.waiting {
-        format!("💭 {} (thinking...)", app.input)
+    let (input_display, input_style, input_border_color, input_title) = if app.waiting {
+        (
+            format!("⏳ {} (AI is processing...)", app.input),
+            Style::default().fg(Color::Yellow),
+            Color::Yellow,
+            "📝 Input [⏸ Waiting for response...]"
+        )
     } else if app.input.is_empty() {
-        "✍️  Type your message here...".to_string()
+        (
+            "✨ Start typing your message... (Press Enter to send)".to_string(),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Color::Cyan,
+            "📝 Input [Ready]"
+        )
     } else {
-        format!("✍️  {}", app.input)
-    };
-
-    let input_style = if app.input.is_empty() {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::White)
+        (
+            format!("✍️  {} █", app.input),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Color::Green,
+            "📝 Input [Typing...]"
+        )
     };
 
     let input = Paragraph::new(input_display)
@@ -492,9 +551,9 @@ fn ui(f: &mut Frame, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("📝 Input (Ctrl+C or Esc to quit)")
+                .title(input_title)
                 .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(input_border_color).add_modifier(Modifier::BOLD))
                 .style(Style::default().bg(Color::Black)),
         );
 
