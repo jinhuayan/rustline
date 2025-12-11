@@ -361,153 +361,176 @@ fn render_welcome_screen(f: &mut Frame) {
 
     let area = f.area();
 
-    // Define content sizes
-    let full_info_height: u16 = 15; 
-    let minimal_info_height: u16 = 6; // 4 lines content + 2 border
-    let full_logo_height: u16 = 9;
-    let compact_logo_height: u16 = 4;
-
-    let available_height = area.height;
-
-    let (show_logo, use_compact_logo, use_minimal_info) = if available_height >= full_logo_height + full_info_height + 2 {
-        (true, false, false)
-    } else if available_height >= compact_logo_height + full_info_height + 2 {
-        (true, true, false)
-    } else if available_height >= full_info_height + 2 {
-        (false, false, false) // No logo, full info
-    } else {
-        (false, false, true) // No logo, minimal info
-    };
-
-    let logo_height = if !show_logo {
-        0
-    } else if use_compact_logo {
-        compact_logo_height
-    } else {
-        full_logo_height
-    };
-    
-    let info_height = if use_minimal_info { minimal_info_height } else { full_info_height };
-
-    // Calculate vertical centering
-    let total_content_height = logo_height + info_height;
-    let vertical_pad = area.height.saturating_sub(total_content_height) / 2;
-
-    // Create layout
-    let chunks = Layout::default()
+    // Create three-section layout matching the main UI
+    let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(vertical_pad),
-            Constraint::Length(logo_height),
-            Constraint::Length(info_height),
-            Constraint::Min(0),
+            Constraint::Length(7),  // Top cards
+            Constraint::Min(15),    // Main welcome content
+            Constraint::Length(3),  // Bottom hint
         ])
         .split(area);
 
-    // Logo content
-    if show_logo {
-        let logo = if use_compact_logo {
-            vec![
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("Rustline AI Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(vec![
-                    Span::styled("A Rust-Based Local AI Agent CLI", Style::default().fg(Color::Yellow)),
-                ]),
-                Line::from(""),
-            ]
-        } else {
-            vec![
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  ____            _   _ _            ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(vec![
-                    Span::styled(" |  _ \\ _   _ ___| |_| (_)_ __   ___ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(vec![
-                    Span::styled(" | |_) | | | / __| __| | | '_ \\ / _ \\", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(vec![
-                    Span::styled(" |  _ <| |_| \\__ \\ |_| | | | | |  __/", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(vec![
-                    Span::styled(" |_| \\_\\\\__,_|___/\\__|_|_|_| |_|\\___|", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                ]),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("     A Rust-Based Local AI Agent CLI", Style::default().fg(Color::Yellow)),
-                ]),
-                Line::from(""),
-            ]
-        };
+    // Split top into two feature cards
+    let top_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(main_chunks[0]);
 
-        let logo_para = Paragraph::new(logo)
-            .alignment(Alignment::Center)
-            .block(Block::default());
+    // Left card - Weather Preview
+    let left_card = vec![
+        Line::from(vec![
+            Span::styled("☀️  Sunny", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("-22°C", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Toronto, ON", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("(Live weather soon!)", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
 
-        f.render_widget(logo_para, chunks[1]);
-    }
-
-    // Information section
-    let info = if use_minimal_info {
-        vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Rustline AI Agent", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from("Press Enter to start"),
-            Line::from("Ctrl+C to quit"),
-        ]
-    } else {
-        vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("✨ Features:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from("Fully offline operation with Ollama"),
-            Line::from("Real-time streaming responses"),
-            Line::from("ReAct-style reasoning with tool execution"),
-            Line::from("Context-aware conversations"),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Quick Start:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from("Press Enter to begin chatting"),
-            Line::from("Type !tools to see available tools"),
-            Line::from("Press Ctrl+C or Esc to quit"),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Press ", Style::default().fg(Color::Gray)),
-                Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(" to start...", Style::default().fg(Color::Gray)),
-            ]),
-        ]
-    };
-
-    let info_para = Paragraph::new(info)
+    let left_para = Paragraph::new(left_card)
         .alignment(Alignment::Center)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" Welcome ")
-                .title_alignment(Alignment::Center),
+                .title("🌤️  Weather")
+                .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                .border_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+                .style(Style::default().bg(Color::Black)),
         );
 
-    // Calculate horizontal centering for info box
-    let info_width = 60;
-    let horizontal_pad = area.width.saturating_sub(info_width) / 2;
-    
-    let info_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(horizontal_pad),
-            Constraint::Min(40), // Minimum width for content
-            Constraint::Length(horizontal_pad),
-        ])
-        .split(chunks[2]);
+    f.render_widget(left_para, top_chunks[0]);
 
-    f.render_widget(info_para, info_chunks[1]);
+    // Right card - Time & System Status
+    let right_card = vec![
+        Line::from(vec![
+            Span::styled("🕐 ", Style::default().fg(Color::Blue)),
+            Span::styled("--:--:--", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("✨ System Ready", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("🔒 100% Private", Style::default().fg(Color::Green)),
+        ]),
+        Line::from(vec![
+            Span::styled("📡 Fully Offline", Style::default().fg(Color::Yellow)),
+        ]),
+    ];
+
+    let right_para = Paragraph::new(right_card)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("⏰ Time & Status")
+                .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                .border_style(Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(right_para, top_chunks[1]);
+
+    // Main welcome content
+    let welcome_content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("      ╔═══════════════════════════════════╗", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("      ║                                   ║", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("      ║  ", Style::default().fg(Color::Cyan)),
+            Span::styled("🦀 RUSTLINE AI AGENT 🦀", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::styled("      ║", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("      ║                                   ║", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::styled("      ╚═══════════════════════════════════╝", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("           Your Personal AI Assistant", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("✨ Features:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(vec![
+            Span::styled("   🎯 ", Style::default().fg(Color::Blue)),
+            Span::styled("Smart Context-Aware Responses", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("   🔧 ", Style::default().fg(Color::Blue)),
+            Span::styled("ReAct-Style Tool Execution", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("   💬 ", Style::default().fg(Color::Blue)),
+            Span::styled("Natural Conversation Flow", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("   🚀 ", Style::default().fg(Color::Blue)),
+            Span::styled("Lightning Fast Performance", Style::default().fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("          Press ", Style::default().fg(Color::Gray)),
+            Span::styled("⏎ Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)),
+            Span::styled(" to start your journey!", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+
+    let welcome_para = Paragraph::new(welcome_content)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("🌟 Welcome 🌟")
+                .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+                .title_alignment(Alignment::Center)
+                .border_style(Style::default().fg(Color::Green))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(welcome_para, main_chunks[1]);
+
+    // Bottom hint bar
+    let hint_text = vec![
+        Line::from(vec![
+            Span::styled("💡 Tip: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Press ", Style::default().fg(Color::Gray)),
+            Span::styled("Ctrl+C", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(" or ", Style::default().fg(Color::Gray)),
+            Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(" to exit anytime", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+
+    let hint_para = Paragraph::new(hint_text)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(hint_para, main_chunks[2]);
 }
