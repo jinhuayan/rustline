@@ -89,20 +89,11 @@ impl App {
         self.current_time = Self::get_current_time();
     }
 
-    /// Get current time as formatted string
+    /// Get current time as formatted string in local timezone
     fn get_current_time() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // TODO: Use chrono crate for proper timezone formatting
-        let hours = (now / 3600) % 24;
-        let minutes = (now / 60) % 60;
-        let seconds = now % 60;
-
-        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        use chrono::Local;
+        let now = Local::now();
+        now.format("%I:%M:%S %p").to_string()
     }
 
     /// Add a character to the input
