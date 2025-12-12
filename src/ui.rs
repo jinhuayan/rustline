@@ -15,6 +15,8 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
+use std::sync::Arc;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug)]
 pub enum StreamEvent {
@@ -293,6 +295,8 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    // Share a single Agent instance across all user inputs to preserve pending state
+    let shared_agent = Arc::new(AsyncMutex::new(agent));
 
     let (tx, mut rx) = mpsc::unbounded_channel::<StreamEvent>();
 
@@ -363,9 +367,10 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
 
                         // Spawn task to handle agent response with streaming
                         let tx_clone = tx.clone();
-                        let mut agent_clone = agent.clone();
+                        let shared_agent_clone = Arc::clone(&shared_agent);
                         tokio::spawn(async move {
-                            match agent_clone
+                                    let mut agent_guard = shared_agent_clone.lock().await;
+                            match agent_guard
                                 .handle_message_stream(
                                     &user_input,
                                     |chunk| {
@@ -586,7 +591,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             };
 
             let header = format!("{} {} {} {}", decorator_left, icon, prefix, decorator_right);
-
+            
             // Safe width calculation with text wrapping
             let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
 
@@ -729,6 +734,13 @@ fn ui(f: &mut Frame, app: &mut App) {
         )
     };
 
+    let awaiting_confirm = pending_confirmation_active(app);
+    let input_title = if awaiting_confirm {
+        "Input (Awaiting confirmation: yes/no, or !do/!skip)"
+    } else {
+        "Input (Ctrl+C or Esc to quit)"
+    };
+
     let input = Paragraph::new(input_display).style(input_style).block(
         Block::default()
             .borders(Borders::ALL)
@@ -747,6 +759,39 @@ fn ui(f: &mut Frame, app: &mut App) {
     );
 
     f.render_widget(input, main_chunks[2]);
+}
+
+/// Detect whether the last assistant message is a human-style confirmation prompt.
+fn pending_confirmation_active(app: &App) -> bool {
+    if let Some(last) = app.messages.iter().rev().find(|m| m.role == MessageRole::Assistant) {
+        let lc = last.content.to_lowercase();
+        return lc.contains("i am going to create this file") || lc.contains("i am going to open this file");
+    }
+    false
+}
+
+/// Try to pretty-print JSON if the input is JSON; otherwise return the original string.
+fn pretty_json_if_possible(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(v) => {
+                // Special-case for create_file exists protection: show a clear message.
+                if let Some(obj) = v.as_object() {
+                    if obj.get("exists").and_then(|b| b.as_bool()).unwrap_or(false) {
+                        if let Some(msg) = obj.get("message").and_then(|m| m.as_str()) {
+                            let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
+                            return format!("{}\nPath: {}", msg, path);
+                        }
+                    }
+                }
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| s.to_string())
+            }
+            Err(_) => s.to_string(),
+        }
+    } else {
+        s.to_string()
+    }
 }
 
 /// Render the welcome screen

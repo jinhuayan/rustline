@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use walkdir::WalkDir;
+use std::collections::HashSet;
 use serde_json::json;
 
 use chrono::Local;
@@ -77,53 +78,10 @@ impl Tool for ReadFileTool {
             return Ok("Usage: !read_file <path_or_filename>".to_string());
         }
 
-        // If the input looks like a path (contains a separator or starts with '.' or '~'),
-        // try to read it directly (with tilde expansion).
-        let looks_like_path = input.contains(std::path::MAIN_SEPARATOR) || input.starts_with('.') || input.starts_with('~');
-
-        if looks_like_path {
-            let p = expand_path(input);
+        if let Some(p) = resolve_to_path(input) {
             return read_and_truncate(&p);
         }
-
-        // Otherwise treat as a bare filename and search recursively through sensible roots.
-        let filename = input;
-
-        let mut search_roots: Vec<PathBuf> = Vec::new();
-        // cwd stands for current working directory
-        if let Ok(cwd) = env::current_dir() {
-            search_roots.push(cwd.clone());
-            search_roots.push(cwd.join("src"));
-
-            if let Some(root) = find_project_root(&cwd) {
-                if !search_roots.contains(&root) {
-                    search_roots.push(root.clone());
-                    search_roots.push(root.join("src"));
-                }
-            }
-        }
-
-        // Search each root using WalkDir and return the first match.
-        for root in search_roots {
-            if !root.exists() {
-                continue;
-            }
-
-            for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-                if entry.file_type().is_file() {
-                    if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
-                        if name.eq_ignore_ascii_case(filename) {
-                            return read_and_truncate(entry.path());
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(format!(
-            "No file named '{}' found under current dir or project src. Try providing a path.",
-            filename
-        ))
+        Ok(format!("No file named '{}' found under search roots.", input))
     }
 }
 //Helper function turns a path with ~ or relative into an absolute PathBuf
@@ -151,8 +109,116 @@ fn expand_path(input: &str) -> PathBuf {
 
     p
 }
+
+// ----- Shared locating helpers (single source of truth) -----
+fn search_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd.clone());
+        roots.push(cwd.join("src"));
+        if let Some(root) = find_project_root(&cwd) {
+            roots.push(root.clone());
+            roots.push(root.join("src"));
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        roots.push(PathBuf::from(home));
+    }
+    let explicit = PathBuf::from("/Users/rayxu/projects");
+    if !roots.contains(&explicit) { roots.push(explicit); }
+    roots
+}
+
+fn locate_matches(basename_or_path: &str) -> Vec<(PathBuf, u64)> {
+    let mut out: Vec<(PathBuf, u64)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Path-like: expand directly
+    let looks_like_path = basename_or_path.contains(std::path::MAIN_SEPARATOR)
+        || basename_or_path.starts_with('.')
+        || basename_or_path.starts_with('~');
+    if looks_like_path {
+        let p = expand_path(basename_or_path);
+        if p.exists() && p.is_file() {
+            if let Ok(meta) = fs::metadata(&p) {
+                if let Ok(canon) = p.canonicalize() {
+                    out.push((canon, meta.len()));
+                    return out;
+                } else {
+                    out.push((p, meta.len()));
+                    return out;
+                }
+            }
+        }
+        return out;
+    }
+
+    // Basename search across roots with exclusions
+    let default_exclusions = vec![
+        ".git", "node_modules", "target", "dist", "build", ".cache",
+    ];
+    let mut exclusions: HashSet<String> = HashSet::new();
+    if let Ok(val) = env::var("RUSTLINE_LOCATE_EXCLUDE") {
+        for part in val.split(',') {
+            let s = part.trim();
+            if !s.is_empty() { exclusions.insert(s.to_string()); }
+        }
+    } else {
+        for d in default_exclusions { exclusions.insert(d.to_string()); }
+    }
+
+    for root in search_roots() {
+        if !root.exists() { continue; }
+        for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_dir() {
+                if let Some(seg) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    if exclusions.contains(&seg.to_string()) { continue; }
+                }
+            }
+            if entry.file_type().is_file() {
+                if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    let mut matched = false;
+                    if name.eq_ignore_ascii_case(basename_or_path) { matched = true; }
+                    if !matched {
+                        if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+                            if stem.eq_ignore_ascii_case(basename_or_path) { matched = true; }
+                        }
+                    }
+                    if matched {
+                        // skip excluded path segments
+                        if entry.path().components().any(|c| {
+                            use std::path::Component;
+                            match c {
+                                Component::Normal(os) => os.to_str().map(|s| exclusions.contains(&s.to_string())).unwrap_or(false),
+                                _ => false,
+                            }
+                        }) { continue; }
+                        if let Ok(meta) = fs::metadata(entry.path()) {
+                            let canonical = match entry.path().canonicalize() {
+                                Ok(c) => c.to_string_lossy().to_string(),
+                                Err(_) => entry.path().to_string_lossy().to_string(),
+                            };
+                            if seen.insert(canonical.clone()) {
+                                out.push((PathBuf::from(canonical), meta.len()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn resolve_to_path(input: &str) -> Option<PathBuf> {
+    // First try direct path
+    let p = expand_path(input);
+    if p.exists() && p.is_file() { return Some(p.canonicalize().unwrap_or(p)); }
+    // Else locate first match
+    locate_matches(input).into_iter().map(|(pb, _)| pb).next()
+}
 //Helper function to find the project root by looking for Cargo.toml
-fn find_project_root(start: &Path) -> Option<PathBuf> {
+pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cur = start.to_path_buf();
     loop {
         if cur.join("Cargo.toml").exists() {
@@ -195,28 +261,64 @@ fn read_and_truncate(path: &Path) -> ToolResult {
 
 /// All built-in tools available to the agent.
 pub fn default_tools() -> Vec<DynTool> {
-    vec![Box::new(TimeTool), Box::new(EchoTool), Box::new(ReadFileTool), Box::new(OpenWithTool)]
+    vec![
+        Box::new(TimeTool),
+        Box::new(EchoTool),
+        Box::new(ReadFileTool),
+        Box::new(OpenWithTool),
+        Box::new(LocateTool),
+        Box::new(CreateFileTool),
+        Box::new(DeleteFileTool),
+    ]
 }
 
-/// Open file with application tool: opens a file in a native application.
-/// Usage:
-///  - `!open_with <path>` opens with the system default application.
-///  - On macOS: `!open_with -a <AppName> <path>` opens with specified application (e.g., Notes).
-pub struct OpenWithTool;
+/// Locate tool: searches configured roots for files matching a basename and returns a JSON array
+/// of matches: [{"path": "...", "size": 123}, ...]
+pub struct LocateTool;
 
-impl Tool for OpenWithTool {
+impl Tool for LocateTool {
     fn name(&self) -> &str {
-        "open_with"
+        "locate"
     }
 
     fn description(&self) -> &str {
-        "Open a file with the system default app, or on macOS use -a <AppName> to choose an app. Usage: !open_with [-a AppName] <path>"
+        "Locate files by basename in configured roots. Usage: !locate <filename>"
     }
 
     fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         if input.is_empty() {
-            return Ok("Usage: !open_with [-a AppName] <path>".to_string());
+            return Ok("Usage: !locate <filename>".to_string());
+        }
+
+        let matches = locate_matches(input);
+        let results: Vec<serde_json::Value> = matches
+            .into_iter()
+            .map(|(pb, size)| json!({"path": pb.to_string_lossy().to_string(), "size": size}))
+            .collect();
+        Ok(serde_json::to_string(&results)?)
+    }
+}
+
+/// Open file tool: opens a file in a native application.
+/// Usage:
+///  - `!open_file <path>` opens with the system default application.
+///  - On macOS: `!open_file -a <AppName> <path>` opens with specified application (e.g., Notes).
+pub struct OpenWithTool;
+
+impl Tool for OpenWithTool {
+    fn name(&self) -> &str {
+        "open_file"
+    }
+
+    fn description(&self) -> &str {
+        "Open a file with the system default app, or on macOS use -a <AppName> to choose an app. Usage: !open_file [-a AppName] <path>"
+    }
+
+    fn invoke(&self, args: &str) -> ToolResult {
+        let input = args.trim();
+        if input.is_empty() {
+            return Ok("Usage: !open_file [-a AppName] <path>".to_string());
         }
 
         // parse optional macOS -a AppName
@@ -232,21 +334,22 @@ impl Tool for OpenWithTool {
                         app = Some(appname.to_string());
                         path_str = rest.to_string();
                     }
-                } else {
-                    return Ok("Usage: !open_with -a <AppName> <path>".to_string());
+                    } else {
+                        return Ok("Usage: !open_file -a <AppName> <path>".to_string());
                 }
             }
         }
 
         // If no -a prefix was used, path_str remains input
         if path_str.is_empty() {
-            return Ok("Usage: !open_with [-a AppName] <path>".to_string());
+            return Ok("Usage: !open_file [-a AppName] <path>".to_string());
         }
 
-        let p = expand_path(&path_str);
-        if !p.exists() {
-            return Err(format!("Path not found: {}", p.display()).into());
-        }
+        // Resolve by direct path or locate first match
+        let p = match resolve_to_path(&path_str) {
+            Some(pb) => pb,
+            None => return Err(format!("Path not found: {}", expand_path(&path_str).display()).into()),
+        };
 
         // Platform-specific open command
         #[cfg(target_os = "macos")]
@@ -281,7 +384,147 @@ impl Tool for OpenWithTool {
     }
 }
 
-// OpenFileTool removed: use OpenWithTool or ReadFileTool (returns JSON) instead.
+/// Create file tool: creates a file at the given path (expands ~ and relative paths)
+/// and optionally writes provided content. Returns single-line JSON.
+/// Usage:
+///  - `!create_file <path>`
+///  - `!create_file <path> --content <text>`
+pub struct CreateFileTool;
+
+impl Tool for CreateFileTool {
+    fn name(&self) -> &str { "create_file" }
+
+    fn description(&self) -> &str {
+        "Create a file at the given path. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>] [--content <text>]"
+    }
+
+    fn invoke(&self, args: &str) -> ToolResult {
+        let input = args.trim();
+
+        // Parse args: support `--content` followed by the remainder as text
+        let mut path_part: String;
+        let mut content_part: Option<String> = None;
+
+        // Simple parser: support both forms:
+        // 1) "<path> --content <text>"
+        // 2) "--content <text>" (no path provided)
+        if let Some(idx) = input.find(" --content ") {
+            path_part = input[..idx].trim().to_string();
+            let rest = input[idx + " --content ".len()..].trim();
+            if !rest.is_empty() {
+                content_part = Some(rest.to_string());
+            }
+        } else if let Some(rest) = input.strip_prefix("--content ") {
+            // No path provided, only content
+            path_part = String::new();
+            let txt = rest.trim();
+            if !txt.is_empty() {
+                content_part = Some(txt.to_string());
+            }
+        } else if input == "--content" {
+            // No path and no content text
+            path_part = String::new();
+            content_part = Some(String::new());
+        } else {
+            path_part = input.to_string();
+        }
+
+        // Default behavior: if no path provided, create in ./rustline_temp with an auto-generated name
+        if path_part.is_empty() {
+            let base = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let temp_dir = base.join("rustline_temp");
+            if !temp_dir.exists() {
+                fs::create_dir_all(&temp_dir)?;
+            }
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            path_part = temp_dir.join(format!("untitled_{}.txt", ts)).to_string_lossy().to_string();
+        }
+
+        let p = expand_path(&path_part);
+        if let Some(parent) = p.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        // Protection: if file already exists, do not overwrite. Return a clear message.
+        if p.exists() {
+            let obj = json!({
+                "path": p.canonicalize()?.to_string_lossy().to_string(),
+                "created": false,
+                "exists": true,
+                "message": "File already exists, try a different file name"
+            });
+            return Ok(serde_json::to_string(&obj)?);
+        }
+
+        match fs::File::create(&p) {
+            Ok(_) => {
+                if let Some(text) = content_part {
+                    fs::write(&p, text.as_bytes())?;
+                }
+                let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                let obj = json!({
+                    "path": p.canonicalize()?.to_string_lossy().to_string(),
+                    "created": true,
+                    "size": size
+                });
+                Ok(serde_json::to_string(&obj)?)
+            }
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+/// Delete file tool: deletes a file at the given path. Returns single-line JSON.
+/// Usage: `!delete_file <path>`
+pub struct DeleteFileTool;
+
+impl Tool for DeleteFileTool {
+    fn name(&self) -> &str { "delete_file" }
+
+    fn description(&self) -> &str {
+        "Delete a file at the given path. Usage: !delete_file <path>"
+    }
+
+    fn invoke(&self, args: &str) -> ToolResult {
+        let input = args.trim();
+        if input.is_empty() {
+            return Ok("Usage: !delete_file <path>".to_string());
+        }
+
+        let p = match resolve_to_path(input) { Some(pb) => pb, None => expand_path(input) };
+        if !p.exists() {
+            let obj = json!({
+                "path": p.to_string_lossy().to_string(),
+                "deleted": false,
+                "message": "File not found"
+            });
+            return Ok(serde_json::to_string(&obj)?);
+        }
+
+        if p.is_dir() {
+            let obj = json!({
+                "path": p.to_string_lossy().to_string(),
+                "deleted": false,
+                "message": "Path is a directory; delete_file only handles files"
+            });
+            return Ok(serde_json::to_string(&obj)?);
+        }
+
+        match fs::remove_file(&p) {
+            Ok(_) => {
+                let obj = json!({
+                    "path": p.to_string_lossy().to_string(),
+                    "deleted": true
+                });
+                Ok(serde_json::to_string(&obj)?)
+            }
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -296,6 +539,66 @@ mod tests {
         format!("{}_{}", prefix, now)
     }
 
+    #[test]
+    fn test_create_file_explicit_path_with_content() {
+        let base = env::temp_dir().join(unique_name("rustline_create_explicit"));
+        fs::create_dir_all(&base).unwrap();
+        let file_path = base.join("note.txt");
+
+        let tool = CreateFileTool;
+        let args = format!("{} --content {}", file_path.to_string_lossy(), "hello world");
+        let res = tool.invoke(&args).expect("invoke failed");
+        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
+        let p = v["path"].as_str().unwrap();
+        assert!(PathBuf::from(p).exists());
+        assert_eq!(fs::read_to_string(p).unwrap(), "hello world");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_create_file_default_dir_when_no_path() {
+        let old_cwd = env::current_dir().unwrap();
+        let base = env::temp_dir().join(unique_name("rustline_create_default"));
+        fs::create_dir_all(&base).unwrap();
+        env::set_current_dir(&base).expect("set cwd");
+
+        let tool = CreateFileTool;
+        let res = tool.invoke("--content default content").expect("invoke failed");
+        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
+        let p = v["path"].as_str().unwrap();
+        let pb = PathBuf::from(p);
+        let parent_name = pb.parent().and_then(|pp| pp.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+        assert_eq!(parent_name, "rustline_temp");
+        assert!(pb.exists());
+        assert_eq!(fs::read_to_string(p).unwrap(), "default content");
+
+        // cleanup
+        env::set_current_dir(old_cwd).unwrap();
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_create_file_exists_protection() {
+        let base = env::temp_dir().join(unique_name("rustline_create_exists"));
+        fs::create_dir_all(&base).unwrap();
+        let file_path = base.join("exists.txt");
+        fs::write(&file_path, "initial").unwrap();
+
+        let tool = CreateFileTool;
+        // Attempt to create the same file again
+        let args = file_path.to_string_lossy().to_string();
+        let res = tool.invoke(&args).expect("invoke failed");
+        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
+        assert_eq!(v["created"].as_bool().unwrap(), false);
+        assert_eq!(v["exists"].as_bool().unwrap(), true);
+        assert_eq!(v["message"].as_str().unwrap(), "File already exists, try a different file name");
+
+        // Ensure original content untouched
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "initial");
+
+        let _ = fs::remove_dir_all(&base);
+    }
     #[test]
     fn test_read_and_truncate_small_file() {
         let tmp = env::temp_dir().join(unique_name("rustline_small") + ".txt");
@@ -384,5 +687,18 @@ mod tests {
         let content = "lorem ipsum dolor";
         fs::write(&tmp, content).expect("write failed");
         let _ = fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn test_locate_tool_finds_helloworld() {
+        // This repo contains a helloworld.txt at the project root.
+        let tool = LocateTool;
+        let res = tool.invoke("helloworld.txt").expect("invoke failed");
+        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
+        assert!(v.is_array());
+        let arr = v.as_array().unwrap();
+        assert!(!arr.is_empty(), "locate returned no matches");
+        let p = arr[0]["path"].as_str().unwrap();
+        assert!(p.ends_with("helloworld.txt"));
     }
 }
