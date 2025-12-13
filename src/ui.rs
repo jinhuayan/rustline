@@ -552,7 +552,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             Style::default().fg(Color::DarkGray),
         )]),
     ];
-
+    // Render weather paragraph
     let weather_para = Paragraph::new(weather_lines)
         .alignment(Alignment::Center)
         .block(

@@ -12,7 +12,11 @@ use chrono::Local;
 
 pub type ToolResult = Result<String, Box<dyn Error>>;
 
-/// Common interface for all tools.
+// ═══════════════════════════════════════════════════════════════════════════
+// Tools for Rustline Agent
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Common interface for all tools. Every tool must follow this trait.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -21,7 +25,9 @@ pub trait Tool: Send + Sync {
 
 pub type DynTool = Box<dyn Tool>;
 
-/// Time tool: returns current local time (based on system timezone).
+// ═══════════════════════════════════════════════════════════════════════════
+// Time tool: returns the current local time.
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct TimeTool;
 
 impl Tool for TimeTool {
@@ -42,7 +48,9 @@ impl Tool for TimeTool {
     }
 }
 
-/// Echo tool: just echoes arguments.
+// ═══════════════════════════════════════════════════════════════════════════
+// Echo tool: echoes back the given text.
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct EchoTool;
 
 impl Tool for EchoTool {
@@ -59,8 +67,11 @@ impl Tool for EchoTool {
     }
 }
 
-/// Read file tool: returns the contents of a file.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Read file tool: reads and returns the contents of a file.
 /// Usage: `!read_file <path>` or called by the agent.
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct ReadFileTool;
 
 impl Tool for ReadFileTool {
@@ -84,14 +95,76 @@ impl Tool for ReadFileTool {
         Ok(format!("No file named '{}' found under search roots.", input))
     }
 }
+
+//Helper function to read a file and truncate its contents if too large
+// The triggering size for truncation is 100 KB
+fn read_and_truncate(path: &Path) -> ToolResult {
+    // Return a JSON object as a single-line string: { path, size, truncated, content }
+    let abs = path.canonicalize()?;
+    match fs::read_to_string(&abs) {
+        Ok(contents) => {
+            const MAX_BYTES: usize = 100_000; // 100 KB
+            let size = contents.len();
+            let (truncated, content_str) = if size > MAX_BYTES {
+                (true, contents[..MAX_BYTES].to_string())
+            } else {
+                (false, contents)
+            };
+
+            let obj = json!({
+                "path": abs.to_string_lossy(),
+                "size": size,
+                "truncated": truncated,
+                "content": content_str
+            });
+            
+            Ok(serde_json::to_string(&obj)?)
+        }
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Locate tool: searches configured roots for files matching a basename and returns a JSON array
+// of matches: [{"path": "...", "size": 123}, ...]
+// ═══════════════════════════════════════════════════════════════════════════
+pub struct LocateTool;
+
+impl Tool for LocateTool {
+    fn name(&self) -> &str {
+        "locate"
+    }
+
+    fn description(&self) -> &str {
+        "Locate files by basename in configured roots. Usage: !locate <filename>"
+    }
+
+    fn invoke(&self, args: &str) -> ToolResult {
+        let input = args.trim();
+        if input.is_empty() {
+            return Ok("Usage: !locate <filename>".to_string());
+        }
+
+        let matches = locate_matches(input);
+        let results: Vec<serde_json::Value> = matches
+            .into_iter()
+            .map(|(pb, size)| json!({"path": pb.to_string_lossy().to_string(), "size": size}))
+            .collect();
+        Ok(serde_json::to_string(&results)?)
+    }
+}
+
 //Helper function turns a path with ~ or relative into an absolute PathBuf
 fn expand_path(input: &str) -> PathBuf {
+
+    //If input starts with ~, expand to HOME
     if input == "~" {
         if let Ok(home) = env::var("HOME") {
             return PathBuf::from(home);
         }
     }
-
+    //If input starts with ~/ expand to HOME/rest
     if let Some(rest) = input.strip_prefix("~/") {
         if let Ok(home) = env::var("HOME") {
             let mut p = PathBuf::from(home);
@@ -99,36 +172,40 @@ fn expand_path(input: &str) -> PathBuf {
             return p;
         }
     }
-
+    //If input is relative, join with current working directory
     let p = PathBuf::from(input);
     if p.is_relative() {
         if let Ok(cwd) = env::current_dir() {
             return cwd.join(p);
         }
     }
-
+    //Else return as is (absolute path)
     p
 }
 
 // ----- Shared locating helpers (single source of truth) -----
 fn search_roots() -> Vec<PathBuf> {
+    //empty vector of roots
     let mut roots: Vec<PathBuf> = Vec::new();
+    //Add current working directory and its src/, plus project root if found
     if let Ok(cwd) = env::current_dir() {
         roots.push(cwd.clone());
         roots.push(cwd.join("src"));
+        // Attempt to find project root (Cargo.toml) and add it and its src/
         if let Some(root) = find_project_root(&cwd) {
             roots.push(root.clone());
             roots.push(root.join("src"));
         }
     }
+    //Add home directory
     if let Ok(home) = env::var("HOME") {
         roots.push(PathBuf::from(home));
     }
-    let explicit = PathBuf::from("/Users/rayxu/projects");
-    if !roots.contains(&explicit) { roots.push(explicit); }
     roots
 }
 
+
+//File Search Engine: locate files by direct path or basename across search roots
 fn locate_matches(basename_or_path: &str) -> Vec<(PathBuf, u64)> {
     let mut out: Vec<(PathBuf, u64)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -153,7 +230,7 @@ fn locate_matches(basename_or_path: &str) -> Vec<(PathBuf, u64)> {
         return out;
     }
 
-    // Basename search across roots with exclusions
+    // Basename search across roots with exclusions in non-user related dirs
     let default_exclusions = vec![
         ".git", "node_modules", "target", "dist", "build", ".cache",
     ];
@@ -166,7 +243,7 @@ fn locate_matches(basename_or_path: &str) -> Vec<(PathBuf, u64)> {
     } else {
         for d in default_exclusions { exclusions.insert(d.to_string()); }
     }
-
+    // recursively walk each root
     for root in search_roots() {
         if !root.exists() { continue; }
         for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
@@ -209,7 +286,7 @@ fn locate_matches(basename_or_path: &str) -> Vec<(PathBuf, u64)> {
     }
     out
 }
-
+//Resolve input to a PathBuf by direct path or first locate match
 fn resolve_to_path(input: &str) -> Option<PathBuf> {
     // First try direct path
     let p = expand_path(input);
@@ -232,196 +309,12 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-//Helper function to read a file and truncate its contents if too large
-fn read_and_truncate(path: &Path) -> ToolResult {
-    // Return a JSON object as a single-line string: { path, size, truncated, content }
-    let abs = path.canonicalize()?;
-    match fs::read_to_string(&abs) {
-        Ok(contents) => {
-            const MAX_BYTES: usize = 100_000; // 100 KB
-            let size = contents.len();
-            let (truncated, content_str) = if size > MAX_BYTES {
-                (true, contents[..MAX_BYTES].to_string())
-            } else {
-                (false, contents)
-            };
-
-            let obj = json!({
-                "path": abs.to_string_lossy(),
-                "size": size,
-                "truncated": truncated,
-                "content": content_str
-            });
-
-            Ok(serde_json::to_string(&obj)?)
-        }
-        Err(e) => Err(Box::new(e)),
-    }
-}
-
-/// All built-in tools available to the agent.
-pub fn default_tools() -> Vec<DynTool> {
-    vec![
-        Box::new(TimeTool),
-        Box::new(EchoTool),
-        Box::new(ReadFileTool),
-        Box::new(OpenWithTool),
-        Box::new(LocateTool),
-        Box::new(CreateFileTool),
-        Box::new(DeleteFileTool),
-        Box::new(WebFetchTool {}),
-        Box::new(WebSummaryTool {}),
-    ]
-}
-
-// Web fetch tool: fetches a URL and returns extracted content.
-pub struct WebFetchTool {}
-
-// Tool trait alias is `DynTool = Box<dyn Tool>`; implement `Tool`.
-impl Tool for WebFetchTool {
-    fn name(&self) -> &str { "web_fetch" }
-    fn description(&self) -> &str { "Fetch a web page by URL and return title + text snippet as JSON" }
-    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let url = input.trim();
-        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
-        // Basic URL check
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
-        }
-
-        // Synchronous fetch using ureq to avoid async runtime issues
-        let agent = ureq::AgentBuilder::new()
-            .user_agent("rustline-web-fetch/1.0")
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
-        let resp_result = agent.get(url).call();
-        let (status, body) = match resp_result {
-            Ok(resp) => {
-                let s = resp.status();
-                let b = resp.into_string().unwrap_or_default();
-                (s, b)
-            }
-            Err(e) => {
-                // Map network/HTTP error to JSON message
-                return Ok(format!("{{\"url\":\"{}\",\"status\":0,\"error\":\"{}\"}}", url, e));
-            }
-        };
-
-        // Try to extract title and main text using scraper
-        let mut title = String::new();
-        let mut text = String::new();
-        let html = scraper::Html::parse_document(&body);
-                let sel_title = scraper::Selector::parse("title").ok();
-                if let Some(sel) = sel_title {
-            if let Some(el) = html.select(&sel).next() { title = el.text().collect::<String>().trim().to_string(); }
-                }
-                let sel_p = scraper::Selector::parse("p").ok();
-                if let Some(sel) = sel_p {
-                    let mut acc = String::new();
-                    for el in html.select(&sel).take(20) {
-                        let t = el.text().collect::<String>();
-                        if !t.trim().is_empty() {
-                            if acc.len() + t.len() > 4000 { break; }
-                            acc.push_str(t.trim());
-                            acc.push_str("\n");
-                        }
-                    }
-                    text = acc;
-                }
-        
-
-        // Fallback: plain text if no HTML parse
-        if title.is_empty() && text.is_empty() {
-            text = body.chars().take(4000).collect();
-        }
-
-        let size = body.len();
-        let json = serde_json::json!({
-            "url": url,
-            "status": status,
-            "title": title,
-            "text": text,
-            "size": size,
-        });
-        Ok(json.to_string())
-    }
-}
-
-pub struct WebSummaryTool {}
-
-impl Tool for WebSummaryTool {
-    fn name(&self) -> &str { "web_summary" }
-    fn description(&self) -> &str { "Fetch a URL and return a brief summary (title + key sentences) as JSON" }
-    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let url = input.trim();
-        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
-        }
-
-        let fetch = WebFetchTool {};
-        let res = fetch.invoke(url)?;
-        let v: serde_json::Value = serde_json::from_str(&res).unwrap_or(serde_json::json!({"url": url, "status": 0, "title": "", "text": ""}));
-        let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
-        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
-        let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
-
-        let sentences: Vec<&str> = text
-            .split(|c| c == '.' || c == '!' || c == '?')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let mut summary_parts = Vec::new();
-        for s in sentences.iter().take(5) { summary_parts.push(*s); }
-        let mut summary = if summary_parts.is_empty() { text.lines().take(5).collect::<Vec<_>>().join(" ") } else { summary_parts.join(". ") };
-        // Cap summary length to ~600 chars for TUI readability
-        const MAX_SUMMARY: usize = 600;
-        if summary.len() > MAX_SUMMARY {
-            summary = format!("{}…", &summary[..MAX_SUMMARY]);
-        }
-
-        let json = serde_json::json!({
-            "url": url,
-            "status": status,
-            "title": title,
-            "summary": summary,
-        });
-        Ok(json.to_string())
-    }
-}
-
-/// Locate tool: searches configured roots for files matching a basename and returns a JSON array
-/// of matches: [{"path": "...", "size": 123}, ...]
-pub struct LocateTool;
-
-impl Tool for LocateTool {
-    fn name(&self) -> &str {
-        "locate"
-    }
-
-    fn description(&self) -> &str {
-        "Locate files by basename in configured roots. Usage: !locate <filename>"
-    }
-
-    fn invoke(&self, args: &str) -> ToolResult {
-        let input = args.trim();
-        if input.is_empty() {
-            return Ok("Usage: !locate <filename>".to_string());
-        }
-
-        let matches = locate_matches(input);
-        let results: Vec<serde_json::Value> = matches
-            .into_iter()
-            .map(|(pb, size)| json!({"path": pb.to_string_lossy().to_string(), "size": size}))
-            .collect();
-        Ok(serde_json::to_string(&results)?)
-    }
-}
-
+// ═══════════════════════════════════════════════════════════════════════════
 /// Open file tool: opens a file in a native application.
 /// Usage:
 ///  - `!open_file <path>` opens with the system default application.
 ///  - On macOS: `!open_file -a <AppName> <path>` opens with specified application (e.g., Notes).
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct OpenWithTool;
 
 impl Tool for OpenWithTool {
@@ -502,11 +395,13 @@ impl Tool for OpenWithTool {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
 /// Create file tool: creates a file at the given path (expands ~ and relative paths)
 /// and optionally writes provided content. Returns single-line JSON.
 /// Usage:
 ///  - `!create_file <path>`
 ///  - `!create_file <path> --content <text>`
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct CreateFileTool;
 
 impl Tool for CreateFileTool {
@@ -594,8 +489,10 @@ impl Tool for CreateFileTool {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
 /// Delete file tool: deletes a file at the given path. Returns single-line JSON.
 /// Usage: `!delete_file <path>`
+/// ═══════════════════════════════════════════════════════════════════════════
 pub struct DeleteFileTool;
 
 impl Tool for DeleteFileTool {
@@ -643,7 +540,151 @@ impl Tool for DeleteFileTool {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Web fetch tool: fetches a URL and returns extracted content.
+// ═══════════════════════════════════════════════════════════════════════════
+pub struct WebFetchTool {}
 
+// This tool fetches a web page by URL and returns a JSON object with title, text snippet, status, and size.
+impl Tool for WebFetchTool {
+    fn name(&self) -> &str { "web_fetch" }
+    fn description(&self) -> &str { "Fetch a web page by URL and return title + text snippet as JSON" }
+    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let url = input.trim();
+        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
+        // Basic URL check
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
+        }
+
+        // Fetch the URL using user agent and timeout in 10 seconds
+        let agent = ureq::AgentBuilder::new()
+            .user_agent("rustline-web-fetch/1.0")
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let resp_result = agent.get(url).call();
+        let (status, body) = match resp_result {
+            Ok(resp) => {
+                let s = resp.status();
+                let b = resp.into_string().unwrap_or_default();
+                (s, b)
+            }
+            Err(e) => {
+                // Map network/HTTP error to JSON message
+                return Ok(format!("{{\"url\":\"{}\",\"status\":0,\"error\":\"{}\"}}", url, e));
+            }
+        };
+
+        // Try to extract title and main text using scraper 
+        let mut title = String::new();
+        let mut text = String::new();
+        let html = scraper::Html::parse_document(&body);
+                let sel_title = scraper::Selector::parse("title").ok();
+                if let Some(sel) = sel_title {
+            if let Some(el) = html.select(&sel).next() { title = el.text().collect::<String>().trim().to_string(); }
+                }
+                let sel_p = scraper::Selector::parse("p").ok();
+                if let Some(sel) = sel_p {
+                    let mut acc = String::new();
+                    for el in html.select(&sel).take(20) {
+                        let t = el.text().collect::<String>();
+                        if !t.trim().is_empty() {
+                            if acc.len() + t.len() > 4000 { break; }
+                            acc.push_str(t.trim());
+                            acc.push_str("\n");
+                        }
+                    }
+                    text = acc;
+                }
+        
+
+        // Fallback: plain text if no HTML parse
+        if title.is_empty() && text.is_empty() {
+            text = body.chars().take(4000).collect();
+        }
+
+        let size = body.len();
+        let json = serde_json::json!({
+            "url": url,
+            "status": status,
+            "title": title,
+            "text": text,
+            "size": size,
+        });
+        Ok(json.to_string())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+/// Web summary tool: fetches a URL and returns a brief summary (title + key sentences) as JSON.
+/// ═══════════════════════════════════════════════════════════════════════════
+pub struct WebSummaryTool {}
+
+impl Tool for WebSummaryTool {
+    fn name(&self) -> &str { "web_summary" }
+    fn description(&self) -> &str { "Fetch a URL and return a brief summary (title + key sentences) as JSON" }
+    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let url = input.trim();
+        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
+        }
+        // Use WebFetchTool to get the page content
+        let fetch = WebFetchTool {};
+        let res = fetch.invoke(url)?;
+        let v: serde_json::Value = serde_json::from_str(&res).unwrap_or(serde_json::json!({"url": url, "status": 0, "title": "", "text": ""}));
+        let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+        let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
+
+        let sentences: Vec<&str> = text
+            .split(|c| c == '.' || c == '!' || c == '?')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut summary_parts = Vec::new();
+        for s in sentences.iter().take(5) { summary_parts.push(*s); }
+        let mut summary = if summary_parts.is_empty() { text.lines().take(5).collect::<Vec<_>>().join(" ") } else { summary_parts.join(". ") };
+        // Cap summary length to ~600 chars for TUI readability
+        const MAX_SUMMARY: usize = 600;
+        if summary.len() > MAX_SUMMARY {
+            summary = format!("{}…", &summary[..MAX_SUMMARY]);
+        }
+
+        let json = serde_json::json!({
+            "url": url,
+            "status": status,
+            "title": title,
+            "summary": summary,
+        });
+        Ok(json.to_string())
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// All built-in tools available to the agent.
+// ═══════════════════════════════════════════════════════════════════════════
+pub fn default_tools() -> Vec<DynTool> {
+    vec![
+        Box::new(TimeTool),
+        Box::new(EchoTool),
+        Box::new(ReadFileTool),
+        Box::new(OpenWithTool),
+        Box::new(LocateTool),
+        Box::new(CreateFileTool),
+        Box::new(DeleteFileTool),
+        Box::new(WebFetchTool {}),
+        Box::new(WebSummaryTool {}),
+    ]
+}
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Unit tests for tools
+// ═══════════════════════════════════════════════════════════════════════════
 #[cfg(test)]
 mod tests {
     use super::*;
