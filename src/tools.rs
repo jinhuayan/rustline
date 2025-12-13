@@ -269,7 +269,125 @@ pub fn default_tools() -> Vec<DynTool> {
         Box::new(LocateTool),
         Box::new(CreateFileTool),
         Box::new(DeleteFileTool),
+        Box::new(WebFetchTool {}),
+        Box::new(WebSummaryTool {}),
     ]
+}
+
+// Web fetch tool: fetches a URL and returns extracted content.
+pub struct WebFetchTool {}
+
+// Tool trait alias is `DynTool = Box<dyn Tool>`; implement `Tool`.
+impl Tool for WebFetchTool {
+    fn name(&self) -> &str { "web_fetch" }
+    fn description(&self) -> &str { "Fetch a web page by URL and return title + text snippet as JSON" }
+    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let url = input.trim();
+        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
+        // Basic URL check
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
+        }
+
+        // Synchronous fetch using ureq to avoid async runtime issues
+        let agent = ureq::AgentBuilder::new()
+            .user_agent("rustline-web-fetch/1.0")
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let resp_result = agent.get(url).call();
+        let (status, body) = match resp_result {
+            Ok(resp) => {
+                let s = resp.status();
+                let b = resp.into_string().unwrap_or_default();
+                (s, b)
+            }
+            Err(e) => {
+                // Map network/HTTP error to JSON message
+                return Ok(format!("{{\"url\":\"{}\",\"status\":0,\"error\":\"{}\"}}", url, e));
+            }
+        };
+
+        // Try to extract title and main text using scraper
+        let mut title = String::new();
+        let mut text = String::new();
+        let html = scraper::Html::parse_document(&body);
+                let sel_title = scraper::Selector::parse("title").ok();
+                if let Some(sel) = sel_title {
+            if let Some(el) = html.select(&sel).next() { title = el.text().collect::<String>().trim().to_string(); }
+                }
+                let sel_p = scraper::Selector::parse("p").ok();
+                if let Some(sel) = sel_p {
+                    let mut acc = String::new();
+                    for el in html.select(&sel).take(20) {
+                        let t = el.text().collect::<String>();
+                        if !t.trim().is_empty() {
+                            if acc.len() + t.len() > 4000 { break; }
+                            acc.push_str(t.trim());
+                            acc.push_str("\n");
+                        }
+                    }
+                    text = acc;
+                }
+        
+
+        // Fallback: plain text if no HTML parse
+        if title.is_empty() && text.is_empty() {
+            text = body.chars().take(4000).collect();
+        }
+
+        let size = body.len();
+        let json = serde_json::json!({
+            "url": url,
+            "status": status,
+            "title": title,
+            "text": text,
+            "size": size,
+        });
+        Ok(json.to_string())
+    }
+}
+
+pub struct WebSummaryTool {}
+
+impl Tool for WebSummaryTool {
+    fn name(&self) -> &str { "web_summary" }
+    fn description(&self) -> &str { "Fetch a URL and return a brief summary (title + key sentences) as JSON" }
+    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let url = input.trim();
+        if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Ok(format!("{{\"error\":\"Invalid URL: {}\"}}", url));
+        }
+
+        let fetch = WebFetchTool {};
+        let res = fetch.invoke(url)?;
+        let v: serde_json::Value = serde_json::from_str(&res).unwrap_or(serde_json::json!({"url": url, "status": 0, "title": "", "text": ""}));
+        let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+        let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+        let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
+
+        let sentences: Vec<&str> = text
+            .split(|c| c == '.' || c == '!' || c == '?')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut summary_parts = Vec::new();
+        for s in sentences.iter().take(5) { summary_parts.push(*s); }
+        let mut summary = if summary_parts.is_empty() { text.lines().take(5).collect::<Vec<_>>().join(" ") } else { summary_parts.join(". ") };
+        // Cap summary length to ~600 chars for TUI readability
+        const MAX_SUMMARY: usize = 600;
+        if summary.len() > MAX_SUMMARY {
+            summary = format!("{}…", &summary[..MAX_SUMMARY]);
+        }
+
+        let json = serde_json::json!({
+            "url": url,
+            "status": status,
+            "title": title,
+            "summary": summary,
+        });
+        Ok(json.to_string())
+    }
 }
 
 /// Locate tool: searches configured roots for files matching a basename and returns a JSON array

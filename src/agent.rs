@@ -243,7 +243,7 @@ impl Agent {
 
         let (tool_descs, tool_names) = build_tool_descriptions(&self.tools);
 
-        // compute search roots to show the model (cwd, project root, src, HOME, explicit /Users/rayxu)
+        // compute search roots to show the model (cwd, project root, src, HOME, etc)
         let mut search_roots: Vec<String> = Vec::new();
         if let Ok(cwd) = std::env::current_dir() {
             search_roots.push(cwd.to_string_lossy().to_string());
@@ -256,8 +256,7 @@ impl Agent {
         if let Ok(home) = std::env::var("HOME") {
             search_roots.push(home);
         }
-        // explicit allowed user folder
-        search_roots.push("/Users/rayxu/projects".to_string());
+        // avoid hardcoded user-specific folders; rely on cwd/project root and HOME
 
         let search_paths = format!("[{}]", search_roots.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", "));
 
@@ -445,6 +444,22 @@ impl Agent {
                     } else if tool_name == "read_file" {
                         match serde_json::from_str::<Value>(&observation) {
                             Ok(Value::Object(map)) => format_read_output(&map),
+                            _ => observation.clone(),
+                        }
+                    } else if tool_name == "web_fetch" {
+                        match serde_json::from_str::<Value>(&observation) {
+                            Ok(Value::Object(map)) => format_web_fetch_output(&map),
+                            _ => observation.clone(),
+                        }
+                    } else if tool_name == "web_summary" {
+                        match serde_json::from_str::<Value>(&observation) {
+                            Ok(Value::Object(map)) => {
+                                if let Some(summary) = map.get("summary").and_then(|s| s.as_str()) {
+                                    summary.to_string()
+                                } else {
+                                    observation.clone()
+                                }
+                            }
                             _ => observation.clone(),
                         }
                     } else if observation.len() > 200 {
@@ -719,6 +734,18 @@ fn parse_react_reply(reply: &str) -> PlanOutput {
     }
 }
 
+// Helper: check if any whole word from the list appears in text.
+// Whole word means surrounded by whitespace or start/end of string.
+fn has_word_in(text: &str, words: &[&str]) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for word in words {
+        if tokens.contains(word) {
+            return true;
+        }
+    }
+    false
+}
+
 // Heuristic to pick a filename-like token from user input.
 fn extract_file_candidate(input: &str) -> Option<String> {
     let low = input.to_lowercase();
@@ -791,17 +818,65 @@ impl Agent {
         // Tighten rule: in strict mode, reads and locates always run deterministically,
         // regardless of confirmation, to avoid LLM-only answers.
         let low = input.to_lowercase();
-        let is_locate_verb = low.contains("locate") || low.contains("where is") || low.contains("find");
-        let is_read_verb = low.contains("read") || low.contains("what is inside") || low.contains("what's inside") || low.contains("contents of");
-        let is_open_verb = low.contains("open") || low.starts_with("open ");
-        let is_create_verb = low.contains("create file") || low.starts_with("create ") || low.contains("create a file");
-        let is_delete_verb = low.contains("delete file") || low.starts_with("delete ") || low.contains("remove file") || low.starts_with("remove ");
+        let is_locate_verb = has_word_in(&low, &["locate", "find"]) || low.contains("where is");
+        let is_read_verb = has_word_in(&low, &["read"]) || low.contains("what is inside") || low.contains("what's inside") || low.contains("contents of");
+        let is_open_verb = has_word_in(&low, &["open"]) && low.contains("file");
+        let is_create_verb = low.contains("create file") || has_word_in(&low, &["create"]) || low.contains("create a file");
+        let is_delete_verb = low.contains("delete file") || has_word_in(&low, &["delete"]) || low.contains("remove file") || has_word_in(&low, &["remove"]);
         let is_negated_create = contains_negation_for_create(&low);
+        // Web intents
+        let has_url = low.contains("http://") || low.contains("https://");
+        let wants_summary = low.contains("summarize") || low.contains("summary") || low.contains("brief");
+        let wants_fetch = low.contains("fetch") || low.contains("get ") || low.contains("download");
 
         let has_filename_token = extract_file_candidate(input).is_some();
 
-        if !(is_locate_verb || is_read_verb || is_open_verb || is_create_verb || has_filename_token) {
+        if !(is_locate_verb || is_read_verb || is_open_verb || is_create_verb || has_filename_token || has_url) {
             return Ok(None);
+        }
+        // Handle web fetch/summary deterministically in strict mode if a URL is present
+        if has_url {
+            // Extract the first URL token
+            let mut url = String::new();
+            for tok in input.split_whitespace() {
+                let t = tok.trim_matches(&[',', '"', '\'', '(', ')'][..]);
+                if t.starts_with("http://") || t.starts_with("https://") { url = t.to_string(); break; }
+            }
+            if !url.is_empty() {
+                if wants_summary {
+                    if let Some(tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("web_summary")) {
+                        match tool.invoke(&url) {
+                            Ok(res) => {
+                                // Format the web_summary result before returning
+                                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&res) {
+                                    if let Some(summary) = map.get("summary").and_then(|s| s.as_str()) {
+                                        return Ok(Some(summary.to_string()));
+                                    }
+                                }
+                                return Ok(Some(res));
+                            },
+                            Err(e) => return Ok(Some(format!("Error summarizing '{}': {}", url, e))),
+                        }
+                    } else {
+                        return Ok(Some("Web summary tool is not available.".to_string()));
+                    }
+                } else if wants_fetch || !wants_summary {
+                    if let Some(tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("web_fetch")) {
+                        match tool.invoke(&url) {
+                            Ok(res) => {
+                                // Format the web_fetch result before returning
+                                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&res) {
+                                    return Ok(Some(format_web_fetch_output(&map)));
+                                }
+                                return Ok(Some(res));
+                            },
+                            Err(e) => return Ok(Some(format!("Error fetching '{}': {}", url, e))),
+                        }
+                    } else {
+                        return Ok(Some("Web fetch tool is not available.".to_string()));
+                    }
+                }
+            }
         }
 
         // Confirmation summaries are handled in planning stage; proceed with strict precheck.
@@ -1093,6 +1168,24 @@ fn format_read_output(map: &serde_json::Map<String, Value>) -> String {
     human.push_str(&format!("File: {}\nSize: {} bytes\nTruncated: {}\n\n", path, size, truncated));
     human.push_str(content);
     human
+}
+
+fn format_web_fetch_output(map: &serde_json::Map<String, Value>) -> String {
+    let title = map.get("title").and_then(|v| v.as_str()).unwrap_or("(no title)");
+    let text = map.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    
+    const MAX_TEXT_CHARS: usize = 1000;
+    let text_display = if text.len() > MAX_TEXT_CHARS {
+        format!("{}...", &text[..MAX_TEXT_CHARS])
+    } else {
+        text.to_string()
+    };
+    
+    if text_display.is_empty() {
+        format!("{}\n\n(No text content extracted)", title)
+    } else {
+        format!("{}\n\n{}", title, text_display)
+    }
 }
 
 // Interpret natural-language confirmation: returns Some(true) for affirmative, Some(false) for negative, None otherwise.

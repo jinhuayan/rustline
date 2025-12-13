@@ -9,7 +9,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     text::Text,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -43,6 +43,12 @@ pub struct App {
     pub show_welcome: bool,
     /// State for the chat list
     pub list_state: ListState,
+    /// Whether user is manually scrolling chat history
+    pub manual_scroll: bool,
+    /// Last known message count (for detecting when new messages arrive)
+    pub last_message_count: usize,
+    /// Number of rendered list items (one per visual line) for scrolling bounds
+    pub rendered_items_count: usize,
     /// Current time display (TODO: update periodically)
     pub current_time: String,
     /// Weather information (TODO: fetch from API)
@@ -81,6 +87,9 @@ impl App {
             thinking_content: String::new(),
             show_welcome: true,
             list_state: ListState::default(),
+            manual_scroll: false,
+            last_message_count: 0,
+            rendered_items_count: 0,
             current_time: Self::get_current_time(),
             weather_info: WeatherInfo::default(),
         }
@@ -146,6 +155,8 @@ impl App {
         }
         self.thinking_content.clear();
         self.waiting = false;
+        // Reset auto-scroll to bottom on new assistant message
+        self.manual_scroll = false;
     }
 
     /// Dismiss the welcome screen and start the chat
@@ -345,17 +356,16 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Handle input events
-        if event::poll(std::time::Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    app.should_quit = true;
-                }
-                KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    app.should_quit = true;
-                }
+        if event::poll(std::time::Duration::from_millis(100))? {
+            let evt = event::read()?;
+            match evt {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        app.should_quit = true;
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                        app.should_quit = true;
+                    }
                 KeyCode::Enter => {
                     if app.show_welcome {
                         app.dismiss_welcome();
@@ -364,32 +374,27 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                         app.add_message(MessageRole::User, user_input.clone());
                         app.clear_input();
                         app.start_streaming();
+                        app.manual_scroll = false;
 
                         // Spawn task to handle agent response with streaming
                         let tx_clone = tx.clone();
                         let shared_agent_clone = Arc::clone(&shared_agent);
                         tokio::spawn(async move {
-                                    let mut agent_guard = shared_agent_clone.lock().await;
+                            let mut agent_guard = shared_agent_clone.lock().await;
                             match agent_guard
                                 .handle_message_stream(
                                     &user_input,
                                     |chunk| {
-                                        let _ =
-                                            tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
+                                        let _ = tx_clone.send(StreamEvent::Chunk(chunk.to_string()));
                                     },
                                     |think| {
-                                        let _ =
-                                            tx_clone.send(StreamEvent::Thinking(think.to_string()));
+                                        let _ = tx_clone.send(StreamEvent::Thinking(think.to_string()));
                                     },
                                 )
                                 .await
                             {
-                                Ok(response) => {
-                                    let _ = tx_clone.send(StreamEvent::Done(Ok(response)));
-                                }
-                                Err(e) => {
-                                    let _ = tx_clone.send(StreamEvent::Done(Err(e.to_string())));
-                                }
+                                Ok(response) => { let _ = tx_clone.send(StreamEvent::Done(Ok(response))); }
+                                Err(e) => { let _ = tx_clone.send(StreamEvent::Done(Err(e.to_string()))); }
                             }
                         });
                     }
@@ -400,8 +405,77 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Backspace => {
                     app.delete_char();
                 }
+                // Scroll controls for chat history
+                KeyCode::Up => {
+                    if app.rendered_items_count > 0 {
+                        let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                        let next = cur.saturating_sub(1);
+                        app.list_state.select(Some(next));
+                        app.manual_scroll = true;
+                    }
+                }
+                KeyCode::Down => {
+                    if app.rendered_items_count > 0 {
+                        let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                        let next = (cur + 1).min(app.rendered_items_count.saturating_sub(1));
+                        app.list_state.select(Some(next));
+                        app.manual_scroll = true;
+                    }
+                }
+                KeyCode::PageUp => {
+                    if app.rendered_items_count > 0 {
+                        let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                        let next = cur.saturating_sub(5);
+                        app.list_state.select(Some(next));
+                        app.manual_scroll = true;
+                    }
+                }
+                KeyCode::PageDown => {
+                    if app.rendered_items_count > 0 {
+                        let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                        let next = (cur + 5).min(app.rendered_items_count.saturating_sub(1));
+                        app.list_state.select(Some(next));
+                        app.manual_scroll = true;
+                    }
+                }
+                KeyCode::Home => {
+                    if app.rendered_items_count > 0 {
+                        app.list_state.select(Some(0));
+                        app.manual_scroll = true;
+                    }
+                }
+                KeyCode::End => {
+                    if app.rendered_items_count > 0 {
+                        app.list_state.select(Some(app.rendered_items_count - 1));
+                        app.manual_scroll = true;
+                    }
+                }
                 KeyCode::Esc => {
                     app.should_quit = true;
+                }
+                _ => {}
+                }
+                Event::Mouse(mouse) => {
+                    use crossterm::event::MouseEventKind;
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            if app.rendered_items_count > 0 {
+                                let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                                let next = cur.saturating_sub(3);
+                                app.list_state.select(Some(next));
+                                app.manual_scroll = true;
+                            }
+                        }
+                        MouseEventKind::ScrollDown => {
+                            if app.rendered_items_count > 0 {
+                                let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
+                                let next = (cur + 3).min(app.rendered_items_count.saturating_sub(1));
+                                app.list_state.select(Some(next));
+                                app.manual_scroll = true;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -440,7 +514,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5), // Status bar
-            Constraint::Min(10),   // Chat history
+            Constraint::Min(3),    // Chat history - reduced to allow small terminals
             Constraint::Length(3), // Input area
         ])
         .split(f.area());
@@ -559,87 +633,107 @@ fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(time_para, status_chunks[1]);
 
     // Chat history with modern message bubbles
-    let mut messages: Vec<ListItem> = app
-        .messages
-        .iter()
-        .enumerate()
-        .map(|(idx, msg)| {
-            let (style, icon, prefix, decorator_left, decorator_right) = match msg.role {
-                MessageRole::User => (
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                    "👤",
-                    "You",
-                    "╭─",
-                    "─╮",
-                ),
-                MessageRole::Assistant => (
-                    Style::default().fg(Color::Green),
-                    "🤖",
-                    "Rustline",
-                    "┌─",
-                    "─┐",
-                ),
-                MessageRole::System => (
-                    Style::default().fg(Color::Yellow),
-                    "ℹ️",
-                    "System",
-                    "┏━",
-                    "━┓",
-                ),
-            };
+    // Build list items - one per visual line for proper scrolling
+    let mut messages: Vec<ListItem> = Vec::new();
+    
+    for (idx, msg) in app.messages.iter().enumerate() {
+        let (style, icon, prefix, decorator_left, decorator_right) = match msg.role {
+            MessageRole::User => (
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+                "👤",
+                "You",
+                "╭─",
+                "─╮",
+            ),
+            MessageRole::Assistant => (
+                Style::default().fg(Color::Green),
+                "🤖",
+                "Rustline",
+                "┌─",
+                "─┐",
+            ),
+            MessageRole::System => (
+                Style::default().fg(Color::Yellow),
+                "ℹ️",
+                "System",
+                "┏━",
+                "━┓",
+            ),
+        };
 
-            let header = format!("{} {} {} {}", decorator_left, icon, prefix, decorator_right);
-            
-            // Safe width calculation with text wrapping
-            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
+        let header = format!("{} {} {} {}", decorator_left, icon, prefix, decorator_right);
+        
+        // Safe width calculation with text wrapping
+        let width = compute_wrap_width(main_chunks[1].width, 6, 20);
 
-            let wrapped_lines: Vec<String> = textwrap::wrap(&msg.content, width)
-                .into_iter()
-                .map(|s| format!("│ {}", s))
-                .collect();
-
-            let footer = match msg.role {
-                MessageRole::User => "╰─────────────────────────",
-                MessageRole::Assistant => "└─────────────────────────",
-                MessageRole::System => "┗━━━━━━━━━━━━━━━━━━━━━━━━━",
-            };
-
-            let mut full_content = vec![header];
-            full_content.extend(wrapped_lines);
-            full_content.push(footer.to_string());
-
-            if idx < app.messages.len() - 1 {
-                full_content.push("".to_string());
+        // For assistant responses, process content
+        let content_to_wrap = match msg.role {
+            MessageRole::Assistant => {
+                let cleaned = strip_tool_prefixes(&msg.content);
+                let processed = pretty_json_if_possible(&cleaned);
+                truncate_for_tui(&processed)
             }
+            _ => msg.content.clone(),
+        };
+        
+        // Wrap text appropriately
+        let wrapped_lines = wrap_with_prefix(&content_to_wrap, width, "│ ");
 
-            let text = Text::from(full_content.join("\n"));
-            ListItem::new(text).style(style)
-        })
-        .collect();
+        let footer = match msg.role {
+            MessageRole::User => "╰─────────────────────────",
+            MessageRole::Assistant => "└─────────────────────────",
+            MessageRole::System => "┗━━━━━━━━━━━━━━━━━━━━━━━━━",
+        };
+
+        // Add header line
+        messages.push(ListItem::new(header).style(style));
+        
+        // Add content lines
+        for line in wrapped_lines {
+            messages.push(ListItem::new(line).style(style));
+        }
+        
+        // Add footer line
+        messages.push(ListItem::new(footer).style(style));
+        
+        // Add blank line between messages (but not after last message)
+        if idx < app.messages.len() - 1 {
+            messages.push(ListItem::new("".to_string()));
+        }
+    }
 
     if app.waiting {
         if !app.thinking_content.is_empty() {
-            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
+            let width = compute_wrap_width(main_chunks[1].width, 6, 20);
 
             let thinking_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_idx = app.messages.len() % thinking_frames.len();
             let spinner = thinking_frames[frame_idx];
 
             let header = format!("┌─ {} Thinking... ─┐", spinner);
-            let wrapped_thinking: Vec<String> = textwrap::wrap(&app.thinking_content, width)
-                .into_iter()
-                .map(|s| format!("│ {}", s))
-                .collect();
+            let wrapped_thinking = wrap_with_prefix(&app.thinking_content, width, "│ ");
 
-            let mut thinking_content = vec![header];
-            thinking_content.extend(wrapped_thinking);
-            thinking_content.push("└─────────────────────────".to_string());
-            thinking_content.push("".to_string());
-
+            // Add thinking lines as individual ListItems
             messages.push(
-                ListItem::new(Text::from(thinking_content.join("\n"))).style(
+                ListItem::new(header).style(
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::ITALIC | Modifier::DIM),
+                ),
+            );
+            for line in wrapped_thinking {
+                messages.push(
+                    ListItem::new(line).style(
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::ITALIC | Modifier::DIM),
+                    ),
+                );
+            }
+            messages.push(
+                ListItem::new("└─────────────────────────").style(
                     Style::default()
                         .fg(Color::Magenta)
                         .add_modifier(Modifier::ITALIC | Modifier::DIM),
@@ -648,25 +742,34 @@ fn ui(f: &mut Frame, app: &mut App) {
         }
 
         if !app.streaming_content.is_empty() {
-            let width = (main_chunks[1].width as usize).saturating_sub(6).max(1);
+            let width = compute_wrap_width(main_chunks[1].width, 6, 20);
 
             let typing_dots = ["   ", ".  ", ".. ", "..."];
             let dot_idx = (app.streaming_content.len() / 10) % typing_dots.len();
             let dots = typing_dots[dot_idx];
 
             let header = format!("┌─ 🤖 Rustline {} ─┐", dots);
-            let wrapped_streaming: Vec<String> =
-                textwrap::wrap(&format!("{}▊", app.streaming_content), width)
-                    .into_iter()
-                    .map(|s| format!("│ {}", s))
-                    .collect();
+            let wrapped_streaming = wrap_with_prefix(&format!("{}▊", app.streaming_content), width, "│ ");
 
-            let mut streaming_msg = vec![header];
-            streaming_msg.extend(wrapped_streaming);
-            streaming_msg.push("└─────────────────────────".to_string());
-
+            // Add streaming lines as individual ListItems
             messages.push(
-                ListItem::new(Text::from(streaming_msg.join("\n"))).style(
+                ListItem::new(header).style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            );
+            for line in wrapped_streaming {
+                messages.push(
+                    ListItem::new(line).style(
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                );
+            }
+            messages.push(
+                ListItem::new("└─────────────────────────").style(
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -675,10 +778,29 @@ fn ui(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Auto-scroll to the bottom
+    // Save message count for scrollbar before moving messages
+    let messages_count = messages.len();
+    // Expose rendered item count for scroll handling in event loop
+    app.rendered_items_count = messages_count;
+    
+    // Check if new chat messages arrived (by comparing actual message count, not rendered items)
+    let new_messages_arrived = app.messages.len() > app.last_message_count;
+
+    // Auto-scroll to the bottom unless user is manually scrolling
+    // BUT: if new messages arrived, auto-scroll back to bottom
     if !messages.is_empty() {
-        app.list_state.select(Some(messages.len() - 1));
+        if app.list_state.selected().is_none() || !app.manual_scroll || new_messages_arrived {
+            app.list_state.select(Some(messages_count - 1));
+            app.manual_scroll = false; // Reset when auto-scrolling
+        } else {
+            let sel = app.list_state.selected().unwrap_or(0);
+            let clamped = sel.min(messages_count - 1);
+            app.list_state.select(Some(clamped));
+        }
     }
+    
+    // Remember actual message count for next render (not rendered item count)
+    app.last_message_count = app.messages.len();
 
     let chat_title = if app.waiting {
         "💬 Chat History ⚡ (AI is thinking...)"
@@ -706,6 +828,21 @@ fn ui(f: &mut Frame, app: &mut App) {
     );
 
     f.render_stateful_widget(messages_list, main_chunks[1], &mut app.list_state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("↑"))
+        .end_symbol(Some("↓"));
+    let mut scrollbar_state = ScrollbarState::new(messages_count)
+        .position(app.list_state.selected().unwrap_or(0));
+    f.render_stateful_widget(
+        scrollbar,
+        main_chunks[1].inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 
     let (input_display, input_style, input_border_color, input_title) = if app.waiting {
         (
@@ -770,6 +907,27 @@ fn pending_confirmation_active(app: &App) -> bool {
     false
 }
 
+/// Compute a wrap width given area width, padding, and minimum desired width.
+/// Returns usize::MAX to signal "do not wrap" when the area is too narrow.
+fn compute_wrap_width(area_width: u16, padding: usize, min_width: usize) -> usize {
+    let aw = area_width as usize;
+    if aw <= padding { return usize::MAX; }
+    let effective = aw.saturating_sub(padding);
+    if effective < min_width { usize::MAX } else { effective }
+}
+
+/// Wrap text with a prefix; if width is usize::MAX, only split on existing newlines.
+fn wrap_with_prefix(s: &str, width: usize, prefix: &str) -> Vec<String> {
+    if width == usize::MAX {
+        return s.lines().map(|l| format!("{}{}", prefix, l)).collect();
+    }
+    let safe_width = width.max(10);
+    textwrap::wrap(s, safe_width)
+        .into_iter()
+        .map(|w| format!("{}{}", prefix, w))
+        .collect()
+}
+
 /// Try to pretty-print JSON if the input is JSON; otherwise return the original string.
 fn pretty_json_if_possible(s: &str) -> String {
     let trimmed = s.trim();
@@ -778,6 +936,26 @@ fn pretty_json_if_possible(s: &str) -> String {
             Ok(v) => {
                 // Special-case for create_file exists protection: show a clear message.
                 if let Some(obj) = v.as_object() {
+                    // If this is a web_summary result, show only the summary content.
+                    if let Some(summary) = obj.get("summary").and_then(|m| m.as_str()) {
+                        return summary.to_string();
+                    }
+                    // If this is a web_fetch result, show title + text or fallback to URL
+                    if let Some(title) = obj.get("title").and_then(|t| t.as_str()) {
+                        let text = obj.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        if !text.is_empty() {
+                            return format!("{}\n\n{}", title, text);
+                        } else if !title.is_empty() {
+                            let url = obj.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                            return format!("{}\n[From: {}]", title, url);
+                        }
+                    }
+                    // Fallback: just show text if available
+                    if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                        if !text.is_empty() {
+                            return text.to_string();
+                        }
+                    }
                     if obj.get("exists").and_then(|b| b.as_bool()).unwrap_or(false) {
                         if let Some(msg) = obj.get("message").and_then(|m| m.as_str()) {
                             let path = obj.get("path").and_then(|p| p.as_str()).unwrap_or("");
@@ -792,6 +970,37 @@ fn pretty_json_if_possible(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Strip TUI-specific prefixes like "Rustline: " and tool markers, leaving only response content.
+fn strip_tool_prefixes(s: &str) -> String {
+    let trimmed = s.trim_start();
+    let without_label = if trimmed.starts_with("Rustline: ") {
+        trimmed.trim_start_matches("Rustline: ").to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    // If the first line is a tool marker like "[tool:web_fetch]", drop it.
+    let mut lines = without_label.lines();
+    if let Some(first) = lines.next() {
+        if first.starts_with("[tool:") || first.starts_with("tool:") {
+            return lines.collect::<Vec<_>>().join("\n");
+        }
+    }
+    without_label
+}
+
+/// Truncate overly long assistant content to keep it manageable.
+/// Note: ratatui's List widget handles scrolling, so we only cap by character count.
+fn truncate_for_tui(s: &str) -> String {
+    // Cap by characters only; let scrolling handle the rest.
+    const MAX_CHARS: usize = 5000;
+    if s.is_empty() { return String::new(); }
+    if s.len() > MAX_CHARS {
+        return format!("{}…", &s[..MAX_CHARS]);
+    }
+    s.to_string()
 }
 
 /// Render the welcome screen
