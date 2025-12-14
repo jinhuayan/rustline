@@ -6,6 +6,11 @@ use crate::config::Config;
 use crate::ollama;
 use crate::ollama::Message;
 use crate::tools::{self, DynTool};
+use crate::persistence::{
+    session_manager::SessionManager,
+    preference_manager::PreferenceManager,
+    PersistenceError,
+};
 use serde_json::Value;
 
 const REACT_PROMPT_TEMPLATE: &str = r#"
@@ -72,14 +77,18 @@ enum PlanOutput {
 
 /// Core “brain” of Rustline.
 /// Keeps config, ReAct tools, and some lightweight history.
+/// Enhanced with persistence capabilities for session and preference management.
 pub struct Agent {
     http: Client,
-    history: Vec<Message>,
-    config: Config,
+    pub history: Vec<Message>,
+    pub config: Config,
     tools: Vec<DynTool>,
     pending_input: Option<String>,
     pending_action: Option<(String, String)>, // (tool, input)
     last_tool_invoked: Option<(String, String)>, // (tool, input)
+    // Persistence managers
+    pub session_manager: Option<SessionManager>,
+    pub preference_manager: Option<PreferenceManager>,
 }
 
 impl Clone for Agent {
@@ -92,12 +101,15 @@ impl Clone for Agent {
             pending_input: self.pending_input.clone(),
             pending_action: self.pending_action.clone(),
             last_tool_invoked: self.last_tool_invoked.clone(),
+            // Note: Persistence managers are not cloned to avoid shared state issues
+            session_manager: None,
+            preference_manager: None,
         }
     }
 }
 
 impl Agent {
-    /// Create a new agent with given config.
+    /// Create a new agent with given config (without persistence).
     pub fn new(config: Config) -> Self {
         Agent {
             http: Client::new(),
@@ -107,17 +119,366 @@ impl Agent {
             pending_input: None,
             pending_action: None,
             last_tool_invoked: None,
+            session_manager: None,
+            preference_manager: None,
         }
     }
 
-    /// Clear conversation state (for now just local history).
+    /// Create a new agent with persistence capabilities.
+    pub fn new_with_persistence(
+        config: Config, 
+        session_manager: SessionManager, 
+        preference_manager: PreferenceManager
+    ) -> Self {
+        Agent {
+            http: Client::new(),
+            history: Vec::new(),
+            config,
+            tools: tools::default_tools(),
+            pending_input: None,
+            pending_action: None,
+            last_tool_invoked: None,
+            session_manager: Some(session_manager),
+            preference_manager: Some(preference_manager),
+        }
+    }
+
+    /// Clear conversation state (local history and persistent storage if available).
     pub fn reset(&mut self) {
         self.history.clear();
+        
+        // If we have a session manager, clear the current session's persistent storage
+        if let Some(session_manager) = &mut self.session_manager {
+            if let Some(current_session) = session_manager.get_current_session() {
+                let session_id = current_session.to_string();
+                // Delete and recreate the session to clear all data
+                if let Err(e) = session_manager.delete_session(&session_id) {
+                    log::warn!("Failed to clear session during reset: {}", e);
+                } else {
+                    // Create a new session with the same name if possible
+                    if let Ok(new_session_id) = session_manager.create_session(Some("Default Session".to_string())) {
+                        if let Err(e) = session_manager.switch_session(&new_session_id) {
+                            log::warn!("Failed to switch to new session after reset: {}", e);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Change the model name at runtime.
     pub fn set_model(&mut self, model: String) {
         self.config.model = model;
+    }
+
+    /// Load conversation history from a specific session
+    pub fn load_session(&mut self, session_id: Option<&str>) -> Result<(), PersistenceError> {
+        if let Some(session_manager) = &mut self.session_manager {
+            match session_id {
+                Some(id) => {
+                    // Switch to the specified session
+                    session_manager.switch_session(id)?;
+                    // Load the session history
+                    self.history = session_manager.load_current_session_history()?;
+                }
+                None => {
+                    // Load the current session or create a default one
+                    let _ = session_manager.get_or_create_current_session()?;
+                    self.history = session_manager.load_current_session_history()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Save current conversation state to persistent storage
+    pub fn save_current_state(&self) -> Result<(), PersistenceError> {
+        // State is automatically saved as messages are added, so this is mostly a no-op
+        // but could be used for explicit save operations in the future
+        Ok(())
+    }
+
+    /// Create a new session and optionally switch to it
+    pub fn create_new_session(&mut self, name: Option<String>) -> Result<String, PersistenceError> {
+        if let Some(session_manager) = &mut self.session_manager {
+            let session_id = session_manager.create_session(name)?;
+            // Switch to the new session
+            session_manager.switch_session(&session_id)?;
+            // Clear current history since we're starting fresh
+            self.history.clear();
+            Ok(session_id)
+        } else {
+            Err(PersistenceError::InvalidSessionId {
+                session_id: "No session manager available".to_string(),
+            })
+        }
+    }
+
+    /// Switch to an existing session
+    pub fn switch_session(&mut self, session_id: &str) -> Result<(), PersistenceError> {
+        if let Some(session_manager) = &mut self.session_manager {
+            session_manager.switch_session(session_id)?;
+            // Load the session history
+            self.history = session_manager.load_session_history(session_id)?;
+            Ok(())
+        } else {
+            Err(PersistenceError::InvalidSessionId {
+                session_id: "No session manager available".to_string(),
+            })
+        }
+    }
+
+    /// Get the current session ID
+    pub fn get_current_session_id(&self) -> Option<String> {
+        self.session_manager
+            .as_ref()
+            .and_then(|sm| sm.get_current_session().map(|s| s.to_string()))
+    }
+
+    /// Get a reference to the conversation history
+    pub fn get_history(&self) -> &[Message] {
+        &self.history
+    }
+
+    /// List all available sessions
+    pub fn list_sessions(&mut self) -> Result<Vec<crate::persistence::memory_store::SessionInfo>, PersistenceError> {
+        if let Some(session_manager) = &mut self.session_manager {
+            session_manager.list_sessions()
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Delete a session
+    pub fn delete_session(&mut self, session_id: &str) -> Result<(), PersistenceError> {
+        if let Some(session_manager) = &mut self.session_manager {
+            session_manager.delete_session(session_id)?;
+            // If we deleted the current session, clear history
+            if self.get_current_session_id().as_deref() == Some(session_id) {
+                self.history.clear();
+            }
+            Ok(())
+        } else {
+            Err(PersistenceError::InvalidSessionId {
+                session_id: "No session manager available".to_string(),
+            })
+        }
+    }
+
+    /// Export all user data to a file
+    pub fn export_data(&mut self, export_path: &std::path::Path) -> Result<(), PersistenceError> {
+        use crate::persistence::{ExportData, SessionExport};
+        use std::fs::File;
+        use std::io::Write;
+        
+        // Ensure we have persistence managers
+        let session_manager = self.session_manager.as_mut().ok_or_else(|| {
+            PersistenceError::InvalidSessionId {
+                session_id: "No session manager available for export".to_string(),
+            }
+        })?;
+        
+        let preference_manager = self.preference_manager.as_ref().ok_or_else(|| {
+            PersistenceError::InvalidSessionId {
+                session_id: "No preference manager available for export".to_string(),
+            }
+        })?;
+        
+        // Get all sessions
+        let sessions = session_manager.list_sessions()?;
+        let mut session_exports = Vec::new();
+        
+        // Export each session with its messages
+        for session_info in sessions {
+            let messages = session_manager.load_session_history(&session_info.id)?;
+            session_exports.push(SessionExport {
+                metadata: session_info,
+                messages,
+            });
+        }
+        
+        // Get user preferences
+        let preferences = preference_manager.get_preferences().clone();
+        
+        // Create export data structure
+        let export_data = ExportData {
+            version: "1.0.0".to_string(),
+            exported_at: chrono::Utc::now(),
+            sessions: session_exports,
+            preferences,
+        };
+        
+        // Serialize to JSON
+        let json_data = serde_json::to_string_pretty(&export_data)
+            .map_err(|e| PersistenceError::Serialization(e))?;
+        
+        // Write to file atomically
+        let temp_path = export_path.with_extension("tmp");
+        {
+            let mut file = File::create(&temp_path)
+                .map_err(|e| PersistenceError::Io(e))?;
+            file.write_all(json_data.as_bytes())
+                .map_err(|e| PersistenceError::Io(e))?;
+            file.sync_all()
+                .map_err(|e| PersistenceError::Io(e))?;
+        }
+        
+        // Atomically rename to final location
+        std::fs::rename(&temp_path, export_path)
+            .map_err(|e| PersistenceError::Io(e))?;
+        
+        log::info!("Successfully exported data to: {}", export_path.display());
+        Ok(())
+    }
+
+    /// Import user data from a file with validation and conflict resolution
+    pub fn import_data(&mut self, import_path: &std::path::Path) -> Result<(), PersistenceError> {
+        use crate::persistence::ExportData;
+        use std::fs::File;
+        use std::io::Read;
+        use std::collections::HashSet;
+        
+        // Ensure we have persistence managers
+        let session_manager = self.session_manager.as_mut().ok_or_else(|| {
+            PersistenceError::InvalidSessionId {
+                session_id: "No session manager available for import".to_string(),
+            }
+        })?;
+        
+        let preference_manager = self.preference_manager.as_mut().ok_or_else(|| {
+            PersistenceError::InvalidSessionId {
+                session_id: "No preference manager available for import".to_string(),
+            }
+        })?;
+        
+        // Read and parse the import file
+        let mut file = File::open(import_path)
+            .map_err(|e| PersistenceError::Io(e))?;
+        
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|e| PersistenceError::Io(e))?;
+        
+        let import_data: ExportData = serde_json::from_str(&contents)
+            .map_err(|e| PersistenceError::ImportValidation {
+                reason: format!("Invalid JSON format: {}", e),
+            })?;
+        
+        // Validate import data version
+        if import_data.version != "1.0.0" {
+            return Err(PersistenceError::ImportValidation {
+                reason: format!("Unsupported export version: {}", import_data.version),
+            });
+        }
+        
+        // Validate import data structure
+        if import_data.sessions.is_empty() {
+            log::warn!("Import file contains no sessions");
+        }
+        
+        // Validate each session before importing
+        for session_export in &import_data.sessions {
+            if session_export.metadata.id.is_empty() {
+                return Err(PersistenceError::ImportValidation {
+                    reason: "Session with empty ID found in import data".to_string(),
+                });
+            }
+            
+            // Validate message structure
+            for (i, message) in session_export.messages.iter().enumerate() {
+                if message.role.is_empty() {
+                    return Err(PersistenceError::ImportValidation {
+                        reason: format!("Message {} in session {} has empty role", i, session_export.metadata.id),
+                    });
+                }
+                if message.message_id.is_empty() {
+                    return Err(PersistenceError::ImportValidation {
+                        reason: format!("Message {} in session {} has empty message_id", i, session_export.metadata.id),
+                    });
+                }
+            }
+        }
+        
+        // Get existing session IDs to detect conflicts
+        let existing_sessions = session_manager.list_sessions()?;
+        let existing_session_ids: HashSet<String> = existing_sessions
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        
+        // Track imported sessions for rollback capability
+        let mut imported_session_ids = Vec::new();
+        
+        // Import sessions with conflict resolution and rollback on error
+        let import_result = (|| -> Result<(), PersistenceError> {
+            for session_export in import_data.sessions {
+                let mut session_id = session_export.metadata.id.clone();
+                
+                // Resolve session ID conflicts by generating new unique IDs
+                if existing_session_ids.contains(&session_id) {
+                    // Generate a new unique session ID
+                    let original_id = session_id.clone();
+                    session_id = format!("imported_{}_{}", 
+                        chrono::Utc::now().timestamp(), 
+                        uuid::Uuid::new_v4().simple()
+                    );
+                    
+                    log::info!("Resolved session ID conflict: {} -> {}", original_id, session_id);
+                }
+                
+                // Create the session with the resolved ID
+                session_manager.create_session_with_id(&session_id, session_export.metadata.name.clone())?;
+                imported_session_ids.push(session_id.clone());
+                
+                // Import all messages for this session
+                for message in &session_export.messages {
+                    session_manager.save_message(&session_id, message)?;
+                }
+                
+                log::info!("Imported session: {} ({} messages)", 
+                    session_id, session_export.messages.len());
+            }
+            Ok(())
+        })();
+        
+        // If import failed, rollback by deleting imported sessions
+        if let Err(e) = import_result {
+            log::error!("Import failed, rolling back imported sessions: {}", e);
+            for session_id in imported_session_ids {
+                if let Err(rollback_err) = session_manager.delete_session(&session_id) {
+                    log::error!("Failed to rollback session {}: {}", session_id, rollback_err);
+                }
+            }
+            return Err(e);
+        }
+        
+        // Import preferences (merge with existing preferences)
+        // Store original preferences for rollback
+        let original_preferences = preference_manager.get_preferences().clone();
+        
+        let preference_result = (|| -> Result<(), PersistenceError> {
+            preference_manager.update_model_preference(import_data.preferences.default_model.clone())?;
+            preference_manager.update_confirmation_preference(import_data.preferences.confirm_before_tools)?;
+            preference_manager.save_preferences()?;
+            Ok(())
+        })();
+        
+        // If preference import failed, restore original preferences
+        if let Err(e) = preference_result {
+            log::error!("Preference import failed, restoring original preferences: {}", e);
+            if let Err(restore_err) = preference_manager.update_model_preference(original_preferences.default_model) {
+                log::error!("Failed to restore model preference: {}", restore_err);
+            }
+            if let Err(restore_err) = preference_manager.update_confirmation_preference(original_preferences.confirm_before_tools) {
+                log::error!("Failed to restore confirmation preference: {}", restore_err);
+            }
+            // Don't fail the entire import if only preferences failed
+            log::warn!("Preferences import failed but sessions were imported successfully");
+        }
+        
+        log::info!("Successfully imported data from: {} ({} sessions)", 
+            import_path.display(), imported_session_ids.len());
+        Ok(())
     }
 
     /// Manual tool invocation via `!` commands in the REPL.
@@ -301,14 +662,8 @@ impl Agent {
         // Manual `!` tools (bypass LLM & ReAct).
         if let Some(tool_reply) = self.try_run_tool(input)? {
             println!("[ReAct] User invoked manual tool command.");
-            self.history.push(Message {
-                role: "user".to_string(),
-                content: input.to_string(),
-            });
-            self.history.push(Message {
-                role: "assistant".to_string(),
-                content: tool_reply.clone(),
-            });
+            self.log_history("user", input.to_string());
+            self.log_history("assistant", tool_reply.clone());
             return Ok(tool_reply);
         }
 
@@ -325,7 +680,7 @@ impl Agent {
 
         let question = input.to_string();
         let mut steps: Vec<AgentStep> = Vec::new();
-        let max_iterations = 5;
+        let max_iterations = self.config.react_max_iterations;
         let mut total_thinking: std::time::Duration = std::time::Duration::from_secs(0);
 
         println!("\n[ReAct] Starting reasoning loop for question: {question}");
@@ -370,6 +725,11 @@ impl Agent {
                     }
                     println!("[Final Answer] {}", answer);
 
+                    // Log early termination event
+                    println!("[ReAct] Early termination: Final answer received after {} iterations (max: {})", 
+                        iter + 1, max_iterations);
+                    log::info!("ReAct loop terminated early after {} iterations due to final answer", iter + 1);
+
                     // If confirmation mode is ON and the input implies a toolable intent (e.g., create),
                     // but the LLM did not actually call a tool, offer to run the appropriate tool.
                     if self.config.confirm_before_tools {
@@ -385,14 +745,8 @@ impl Agent {
                     }
 
                     // store as simple Q/A history
-                    self.history.push(Message {
-                        role: "user".to_string(),
-                        content: question.clone(),
-                    });
-                    self.history.push(Message {
-                        role: "assistant".to_string(),
-                        content: answer.clone(),
-                    });
+                    self.log_history("user", question.clone());
+                    self.log_history("assistant", answer.clone());
 
                     return Ok(answer);
                 }
@@ -421,8 +775,18 @@ impl Agent {
 
                     let observation = if let Some(tool_impl) = maybe_tool {
                         match tool_impl.invoke(&planned.input) {
-                            Ok(res) => { self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone())); res },
-                            Err(e) => format!("Tool `{}` error: {}", tool_name, e),
+                            Ok(res) => { 
+                                self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone()));
+                                // Persist tool invocation as part of conversation history
+                                self.persist_message_with_tool("assistant", &format!("Used tool: {}", tool_name), &tool_name, &planned.input, &res, true);
+                                res 
+                            },
+                            Err(e) => {
+                                let error_msg = format!("Tool `{}` error: {}", tool_name, e);
+                                // Persist failed tool invocation
+                                self.persist_message_with_tool("assistant", &format!("Tool failed: {}", tool_name), &tool_name, &planned.input, &error_msg, false);
+                                error_msg
+                            },
                         }
                     } else {
                         format!(
@@ -463,8 +827,15 @@ impl Agent {
             }
         }
 
-            // println!("[ReAct] Stopped due to max iterations without finishing.");
-        Ok("Agent stopped due to max iterations without finishing.".to_string())
+        // Provide a more meaningful response when iteration limit is reached
+        let response = format!(
+            "I've reached the maximum number of reasoning steps ({}) while working on your request. \
+            Based on my analysis so far, I may need more specific information or a different approach to complete this task. \
+            Please try rephrasing your question or breaking it into smaller parts.",
+            max_iterations
+        );
+        println!("[ReAct] Reached iteration limit of {} steps", max_iterations);
+        Ok(response)
     }
 
     /// Handle a single user message with streaming support.
@@ -504,14 +875,8 @@ impl Agent {
         // Manual `!` tools (bypass LLM & ReAct).
         if let Some(tool_reply) = self.try_run_tool(input)? {
             on_chunk(&tool_reply);
-            self.history.push(Message {
-                role: "user".to_string(),
-                content: input.to_string(),
-            });
-            self.history.push(Message {
-                role: "assistant".to_string(),
-                content: tool_reply.clone(),
-            });
+            self.log_history("user", input.to_string());
+            self.log_history("assistant", tool_reply.clone());
             return Ok(tool_reply);
         }
 
@@ -522,9 +887,9 @@ impl Agent {
 
         let question = input.to_string();
         let mut steps: Vec<AgentStep> = Vec::new();
-        let max_iterations = 5;
+        let max_iterations = self.config.react_max_iterations;
 
-        for _ in 0..max_iterations {
+        for iter in 0..max_iterations {
             let plan = self.plan_once(&question, &steps).await?;
 
             match plan {
@@ -532,6 +897,11 @@ impl Agent {
                     if let Some(t) = thought {
                         on_think(&format!("Thought: {}", t));
                     }
+                    
+                    // Log early termination event
+                    on_think(&format!("Early termination: Final answer received after {} iterations (max: {})", 
+                        iter + 1, max_iterations));
+                    log::info!("ReAct loop terminated early after {} iterations due to final answer", iter + 1);
                     
                     // If confirmation mode is ON and input implies a toolable intent (e.g., create) but no tool was planned,
                     // offer to run the appropriate tool instead of finalizing immediately.
@@ -556,14 +926,8 @@ impl Agent {
                     }
 
                     // store as simple Q/A history
-                    self.history.push(Message {
-                        role: "user".to_string(),
-                        content: question.clone(),
-                    });
-                    self.history.push(Message {
-                        role: "assistant".to_string(),
-                        content: answer.clone(),
-                    });
+                    self.log_history("user", question.clone());
+                    self.log_history("assistant", answer.clone());
 
                     return Ok(answer);
                 }
@@ -590,8 +954,18 @@ impl Agent {
 
                     let observation = if let Some(tool_impl) = maybe_tool {
                         match tool_impl.invoke(&planned.input) {
-                            Ok(res) => { self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone())); res },
-                            Err(e) => format!("Tool `{}` error: {}", tool_name, e),
+                            Ok(res) => { 
+                                self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone()));
+                                // Persist tool invocation as part of conversation history
+                                self.persist_message_with_tool("assistant", &format!("Used tool: {}", tool_name), &tool_name, &planned.input, &res, true);
+                                res 
+                            },
+                            Err(e) => {
+                                let error_msg = format!("Tool `{}` error: {}", tool_name, e);
+                                // Persist failed tool invocation
+                                self.persist_message_with_tool("assistant", &format!("Tool failed: {}", tool_name), &tool_name, &planned.input, &error_msg, false);
+                                error_msg
+                            },
                         }
                     } else {
                         format!(
@@ -631,9 +1005,14 @@ impl Agent {
             }
         }
 
-        let msg = "Agent stopped due to max iterations without finishing.";
-        on_think(msg);
-        Ok(msg.to_string())
+        let msg = format!(
+            "I've reached the maximum number of reasoning steps ({}) while working on your request. \
+            Based on my analysis so far, I may need more specific information or a different approach to complete this task. \
+            Please try rephrasing your question or breaking it into smaller parts.",
+            max_iterations
+        );
+        on_think(&msg);
+        Ok(msg)
     }
 }
 
@@ -1065,8 +1444,33 @@ impl Agent {
         }
     }
 
-    fn log_history(&mut self, role: &str, content: String) {
-        self.history.push(Message { role: role.to_string(), content });
+    pub fn log_history(&mut self, role: &str, content: String) {
+        let message = Message::new(role.to_string(), content);
+        self.persist_message(&message);
+        self.history.push(message);
+    }
+
+    /// Persist a message to storage if session manager is available
+    fn persist_message(&mut self, message: &Message) {
+        if let Some(session_manager) = &mut self.session_manager {
+            if let Err(e) = session_manager.save_message_to_current_session(message) {
+                log::warn!("Failed to persist message: {}", e);
+            }
+        }
+    }
+
+    /// Persist a message with tool invocation data
+    pub fn persist_message_with_tool(&mut self, role: &str, content: &str, tool_name: &str, tool_input: &str, tool_output: &str, success: bool) {
+        let tool_invocation = crate::ollama::ToolInvocation {
+            tool_name: tool_name.to_string(),
+            input: tool_input.to_string(),
+            output: tool_output.to_string(),
+            success,
+        };
+        
+        let message = Message::new_with_tool(role.to_string(), content.to_string(), tool_invocation);
+        self.persist_message(&message);
+        self.history.push(message);
     }
 }
 
@@ -1118,3 +1522,5 @@ fn interpret_confirmation(input: &str) -> Option<bool> {
 
     None
 }
+
+

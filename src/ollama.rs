@@ -1,10 +1,59 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct Message {
     pub role: String,
     pub content: String,
+    #[serde(default = "Utc::now")]
+    pub timestamp: DateTime<Utc>,
+    #[serde(default = "generate_message_id")]
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_invocation: Option<ToolInvocation>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct ToolInvocation {
+    pub tool_name: String,
+    pub input: String,
+    pub output: String,
+    pub success: bool,
+}
+
+/// Generate a unique message ID
+fn generate_message_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+impl Message {
+    /// Create a new message with automatic timestamp and ID generation
+    pub fn new(role: String, content: String) -> Self {
+        Self {
+            role,
+            content,
+            timestamp: Utc::now(),
+            message_id: generate_message_id(),
+            tool_invocation: None,
+        }
+    }
+    
+    /// Create a new message with tool invocation data
+    pub fn new_with_tool(role: String, content: String, tool_invocation: ToolInvocation) -> Self {
+        Self {
+            role,
+            content,
+            timestamp: Utc::now(),
+            message_id: generate_message_id(),
+            tool_invocation: Some(tool_invocation),
+        }
+    }
+    
+    /// Create a message for compatibility with existing code (without metadata)
+    pub fn simple(role: String, content: String) -> Self {
+        Self::new(role, content)
+    }
 }
 
 #[derive(Serialize)]
@@ -133,10 +182,7 @@ pub async fn chat_single_turn(
     model: &str,
     prompt: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let messages = vec![Message {
-        role: "user".to_string(),
-        content: prompt.to_string(),
-    }];
+    let messages = vec![Message::new("user".to_string(), prompt.to_string())];
 
     chat_with_history(client, base_url, model, &messages).await
 }
@@ -153,10 +199,9 @@ pub async fn chat_single_turn_stream<F>(
 where
     F: FnMut(&str),
 {
-    let messages = vec![Message {
-        role: "user".to_string(),
-        content: prompt.to_string(),
-    }];
+    let messages = vec![Message::new("user".to_string(), prompt.to_string())];
 
     chat_with_history_stream(client, base_url, model, &messages, on_chunk).await
 }
+
+
