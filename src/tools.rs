@@ -85,7 +85,7 @@ impl Tool for ReadFileTool {
     }
 }
 //Helper function turns a path with ~ or relative into an absolute PathBuf
-fn expand_path(input: &str) -> PathBuf {
+pub fn expand_path(input: &str) -> PathBuf {
     if input == "~" {
         if let Ok(home) = env::var("HOME") {
             return PathBuf::from(home);
@@ -233,7 +233,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 }
 
 //Helper function to read a file and truncate its contents if too large
-fn read_and_truncate(path: &Path) -> ToolResult {
+pub fn read_and_truncate(path: &Path) -> ToolResult {
     // Return a JSON object as a single-line string: { path, size, truncated, content }
     let abs = path.canonicalize()?;
     match fs::read_to_string(&abs) {
@@ -526,179 +526,3 @@ impl Tool for DeleteFileTool {
 }
 
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn unique_name(prefix: &str) -> String {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        format!("{}_{}", prefix, now)
-    }
-
-    #[test]
-    fn test_create_file_explicit_path_with_content() {
-        let base = env::temp_dir().join(unique_name("rustline_create_explicit"));
-        fs::create_dir_all(&base).unwrap();
-        let file_path = base.join("note.txt");
-
-        let tool = CreateFileTool;
-        let args = format!("{} --content {}", file_path.to_string_lossy(), "hello world");
-        let res = tool.invoke(&args).expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        let p = v["path"].as_str().unwrap();
-        assert!(PathBuf::from(p).exists());
-        assert_eq!(fs::read_to_string(p).unwrap(), "hello world");
-
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn test_create_file_default_dir_when_no_path() {
-        let old_cwd = env::current_dir().unwrap();
-        let base = env::temp_dir().join(unique_name("rustline_create_default"));
-        fs::create_dir_all(&base).unwrap();
-        env::set_current_dir(&base).expect("set cwd");
-
-        let tool = CreateFileTool;
-        let res = tool.invoke("--content default content").expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        let p = v["path"].as_str().unwrap();
-        let pb = PathBuf::from(p);
-        let parent_name = pb.parent().and_then(|pp| pp.file_name()).and_then(|n| n.to_str()).unwrap_or("");
-        assert_eq!(parent_name, "rustline_temp");
-        assert!(pb.exists());
-        assert_eq!(fs::read_to_string(p).unwrap(), "default content");
-
-        // cleanup
-        env::set_current_dir(old_cwd).unwrap();
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn test_create_file_exists_protection() {
-        let base = env::temp_dir().join(unique_name("rustline_create_exists"));
-        fs::create_dir_all(&base).unwrap();
-        let file_path = base.join("exists.txt");
-        fs::write(&file_path, "initial").unwrap();
-
-        let tool = CreateFileTool;
-        // Attempt to create the same file again
-        let args = file_path.to_string_lossy().to_string();
-        let res = tool.invoke(&args).expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        assert_eq!(v["created"].as_bool().unwrap(), false);
-        assert_eq!(v["exists"].as_bool().unwrap(), true);
-        assert_eq!(v["message"].as_str().unwrap(), "File already exists, try a different file name");
-
-        // Ensure original content untouched
-        assert_eq!(fs::read_to_string(&file_path).unwrap(), "initial");
-
-        let _ = fs::remove_dir_all(&base);
-    }
-    #[test]
-    fn test_read_and_truncate_small_file() {
-        let tmp = env::temp_dir().join(unique_name("rustline_small") + ".txt");
-        let content = "hello rustline";
-        fs::write(&tmp, content).expect("write failed");
-
-        let got = read_and_truncate(&tmp).expect("read failed");
-        let v: serde_json::Value = serde_json::from_str(&got).expect("invalid json");
-        assert_eq!(v["content"].as_str().unwrap(), content);
-        assert_eq!(v["truncated"].as_bool().unwrap(), false);
-
-        let _ = fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_read_and_truncate_large_file() {
-        let tmp = env::temp_dir().join(unique_name("rustline_large") + ".txt");
-        let large = "a".repeat(150_000);
-        fs::write(&tmp, &large).expect("write failed");
-
-        let got = read_and_truncate(&tmp).expect("read failed");
-        let v: serde_json::Value = serde_json::from_str(&got).expect("invalid json");
-        assert_eq!(v["truncated"].as_bool().unwrap(), true);
-        assert_eq!(v["content"].as_str().unwrap().len(), 100_000);
-
-        let _ = fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_expand_path_tilde() {
-        // If HOME is set in the environment, verify expansion uses it.
-        if let Ok(home) = env::var("HOME") {
-            let p1 = expand_path("~");
-            assert_eq!(p1, PathBuf::from(&home));
-
-            let p2 = expand_path("~/foo/bar");
-            assert_eq!(p2, PathBuf::from(&home).join("foo/bar"));
-        } else {
-            // If HOME isn't set in this environment, skip the tilde expansion assertions.
-            eprintln!("HOME not set; skipping tilde expansion test");
-        }
-    }
-
-    #[test]
-    fn test_read_file_tool_direct_path() {
-        let tmp = env::temp_dir().join(unique_name("rustline_tool") + ".txt");
-        let content = "direct path content";
-        fs::write(&tmp, content).expect("write failed");
-
-        let tool = ReadFileTool;
-        let res = tool.invoke(tmp.to_str().unwrap()).expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        assert_eq!(v["content"].as_str().unwrap(), content);
-
-        let _ = fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_read_file_tool_search_filename() {
-        // Create a temporary directory structure and set cwd to it for the test.
-        let base = env::temp_dir().join(unique_name("rustline_search"));
-        let src_dir = base.join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-
-        let filename = "search_me.txt";
-        let file_path = src_dir.join(filename);
-        let content = "found via search";
-        fs::write(&file_path, content).expect("write failed");
-
-        let old_cwd = env::current_dir().unwrap();
-        env::set_current_dir(&base).expect("set cwd");
-
-        let tool = ReadFileTool;
-        let res = tool.invoke(filename).expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        assert_eq!(v["content"].as_str().unwrap(), content);
-
-        // restore cwd
-        env::set_current_dir(old_cwd).unwrap();
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn test_open_file_tool_returns_path_and_content() {
-        let tmp = env::temp_dir().join(unique_name("rustline_open") + ".txt");
-        let content = "lorem ipsum dolor";
-        fs::write(&tmp, content).expect("write failed");
-        let _ = fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn test_locate_tool_finds_helloworld() {
-        // This repo contains a helloworld.txt at the project root.
-        let tool = LocateTool;
-        let res = tool.invoke("helloworld.txt").expect("invoke failed");
-        let v: serde_json::Value = serde_json::from_str(&res).expect("invalid json");
-        assert!(v.is_array());
-        let arr = v.as_array().unwrap();
-        assert!(!arr.is_empty(), "locate returned no matches");
-        let p = arr[0]["path"].as_str().unwrap();
-        assert!(p.ends_with("helloworld.txt"));
-    }
-}
