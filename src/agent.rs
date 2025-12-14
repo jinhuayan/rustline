@@ -508,8 +508,8 @@ impl Agent {
         if name_part == "confirm" {
             let val = args.to_lowercase();
             match val.as_str() {
-                "on" | "true" | "yes" => { self.config.confirm_before_tools = true; return Ok(Some("Confirm-before-tools: ON".to_string())); }
-                "off" | "false" | "no" => { self.config.confirm_before_tools = false; return Ok(Some("Confirm-before-tools: OFF".to_string())); }
+                "on" => { self.config.confirm_before_tools = true; return Ok(Some("Confirm-before-tools: ON".to_string())); }
+                "off" => { self.config.confirm_before_tools = false; return Ok(Some("Confirm-before-tools: OFF".to_string())); }
                 _ => return Ok(Some("Usage: !confirm <on|off>".to_string())),
             }
         }
@@ -617,7 +617,6 @@ impl Agent {
         if let Ok(home) = std::env::var("HOME") {
             search_roots.push(home);
         }
-        // avoid hardcoded user-specific folders; rely on cwd/project root and HOME
 
         let search_paths = format!("[{}]", search_roots.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", "));
 
@@ -736,8 +735,8 @@ impl Agent {
                         let is_create_verb = lowq.contains("create file") || lowq.starts_with("create ") || lowq.contains("create a file");
                         let is_negated_create = contains_negation_for_create(&lowq);
                         if is_create_verb && !is_negated_create && self.pending_action.is_none() {
-                            if let Some(args) = build_create_args(&question) {
-                                let msg = self.preview_destructive(&question, "create_file", &args);
+                            if let Some(filename) = build_create_filename(&question) {
+                                let msg = self.preview_destructive(&question, "create_file", &filename);
                                 return Ok(msg);
                             }
                         }
@@ -925,8 +924,8 @@ impl Agent {
                         let is_create_verb = lowq.contains("create file") || lowq.starts_with("create ") || lowq.contains("create a file");
                         let is_negated_create = contains_negation_for_create(&lowq);
                         if is_create_verb && !is_negated_create && self.pending_action.is_none() {
-                            if let Some(args) = build_create_args(&question) {
-                                let msg = self.preview_destructive(&question, "create_file", &args);
+                            if let Some(filename) = build_create_filename(&question) {
+                                let msg = self.preview_destructive(&question, "create_file", &filename);
                                 on_chunk(&msg);
                                 return Ok(msg);
                             }
@@ -1199,7 +1198,7 @@ impl Agent {
         let low = input.to_lowercase();
         let is_locate_verb = has_word_in(&low, &["locate", "find"]) || low.contains("where is");
         let is_read_verb = has_word_in(&low, &["read"]) || low.contains("what is inside") || low.contains("what's inside") || low.contains("contents of");
-        let is_open_verb = has_word_in(&low, &["open"]) && low.contains("file");
+        let is_open_verb = has_word_in(&low, &["open"]);
         let is_create_verb = low.contains("create file") || has_word_in(&low, &["create"]) || low.contains("create a file");
         let is_delete_verb = low.contains("delete file") || has_word_in(&low, &["delete"]) || low.contains("remove file") || has_word_in(&low, &["remove"]);
         let is_negated_create = contains_negation_for_create(&low);
@@ -1264,19 +1263,19 @@ impl Agent {
         // Only proceed if intent is not negated. In confirm mode, preview and defer.
         if is_create_verb && !is_negated_create {
             if self.config.confirm_before_tools {
-                if let Some(args) = build_create_args(input) {
-                    let msg = self.preview_destructive(input, "create_file", &args);
+                if let Some(filename) = build_create_filename(input) {
+                    let msg = self.preview_destructive(input, "create_file", &filename);
                     return Ok(Some(msg));
                 } else {
                     return Ok(None);
                 }
             }
 
-            if let Some(args) = build_create_args(input) {
+            if let Some(filename) = build_create_filename(input) {
                 if let Some(create_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("create_file")) {
-                    match create_tool.invoke(&args) {
+                    match create_tool.invoke(&filename) {
                         Ok(res) => return Ok(Some(res)),
-                        Err(e) => return Ok(Some(format!("Error creating via args '{}': {}", args, e))),
+                        Err(e) => return Ok(Some(format!("Error creating file '{}': {}", filename, e))),
                     }
                 } else {
                     return Ok(Some("Create tool is not available.".to_string()));
@@ -1309,26 +1308,27 @@ impl Agent {
             let locate_tool = match self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("locate")) { Some(t) => t, None => return Ok(Some("Locate tool is not available.".to_string())) };
             let loc_res = match locate_tool.invoke(&candidate) { Ok(r) => r, Err(e) => return Ok(Some(format!("Error locating '{}': {}", candidate, e))) };
             if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&loc_res) {
-                if let Some(first) = arr.first().and_then(|v| v.get("path")).and_then(|p| p.as_str()) {
-                    if self.config.confirm_before_tools {
-                        self.pending_action = Some(("delete_file".to_string(), first.to_string()));
-                        let msg = self.preview_destructive(input, "delete_file", first);
-                        return Ok(Some(msg));
-                    }
-                    if let Some(del_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("delete_file")) {
-                        match del_tool.invoke(first) {
-                            Ok(res) => { self.last_tool_invoked = Some(("delete_file".to_string(), first.to_string())); return Ok(Some(res)); },
-                            Err(e) => return Ok(Some(format!("Error deleting '{}': {}", first, e))),
+                    if let Some(first) = arr.first().and_then(|v| v.get("path")).and_then(|p| p.as_str()) {
+                        if self.config.confirm_before_tools {
+                            self.pending_action = Some(("delete_file".to_string(), first.to_string()));
+                            let msg = self.preview_destructive(input, "delete_file", first);
+                            return Ok(Some(msg));
+                        }
+                        if let Some(del_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("delete_file")) {
+                            match del_tool.invoke(first) {
+                                Ok(res) => { self.last_tool_invoked = Some(("delete_file".to_string(), first.to_string())); return Ok(Some(res)); },
+                                Err(e) => return Ok(Some(format!("Error deleting '{}': {}", first, e))),
+                            }
+                        } else {
+                            return Ok(Some("Delete tool is not available.".to_string()));
                         }
                     } else {
-                        return Ok(Some("Delete tool is not available.".to_string()));
+                        return Ok(Some(format!("No file named '{}' found under search roots.", candidate)));
                     }
-                } else {
-                    return Ok(Some(format!("No file named '{}' found under search roots.", candidate)));
                 }
-            }
         }
 
+        // Extract candidate for general file operations (locate, read, open, modify)
         let candidate = if let Some(tok) = extract_file_candidate(input) {
             tok
         } else {
@@ -1366,11 +1366,102 @@ impl Agent {
                 }
 
                 if let Some(first) = arr.first().and_then(|v| v.get("path")).and_then(|p| p.as_str()) {
+                    // Detect modify/append intents (e.g., "add", "append", "write", "insert")
+                    let is_modify_verb = has_word_in(&low, &["add", "append", "write", "insert"]) || low.contains("add content") || low.contains("append content") || low.contains("write to");
+                    if is_modify_verb {
+                            // Build arguments for add_content: prefer any explicit content detected by build_add_content_args,
+                            // otherwise append empty content per user preference.
+                            let add_args = if let Some(a) = build_add_content_args(input) {
+                                if a.contains("--content") {
+                                    // replace the candidate filename with the full resolved path from locate
+                                    if let Some(pos) = a.find(" --content") {
+                                        let content_part = a[pos..].trim().to_string();
+                                        format!("{} {}", first, content_part)
+                                    } else {
+                                        format!("{} --content ", first)
+                                    }
+                                } else {
+                                    format!("{} --content ", first)
+                                }
+                            } else {
+                                format!("{} --content ", first)
+                            };
+
+                            if self.config.confirm_before_tools {
+                                self.pending_action = Some(("add_content".to_string(), add_args.clone()));
+                                let msg = self.preview_destructive(input, "add_content", &add_args);
+                                return Ok(Some(msg));
+                            }
+
+                            if let Some(add_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("add_content")) {
+                                match add_tool.invoke(&add_args) {
+                                    Ok(add_res) => {
+                                        self.last_tool_invoked = Some(("add_content".to_string(), add_args.clone()));
+                                        // If add_content returned JSON with { "success": true }, treat as success.
+                                        if let Ok(val) = serde_json::from_str::<Value>(&add_res) {
+                                            if let Value::Object(map) = &val {
+                                                if map.get("success").and_then(|b| b.as_bool()).unwrap_or(false) {
+                                                    return Ok(Some(add_res));
+                                                }
+                                                // Otherwise, fall back to reading the file and return that output alongside the add result.
+                                            } else {
+                                                // Non-object JSON, treat it as success output.
+                                                return Ok(Some(add_res));
+                                            }
+                                        } else {
+                                            // Non-JSON output from add_content — return it as-is.
+                                            return Ok(Some(add_res));
+                                        }
+
+                                        // Fallback: attempt to read the file and return its contents with add error info.
+                                        if let Some(read_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("read_file")) {
+                                            match read_tool.invoke(first) {
+                                                Ok(read_res) => {
+                                                    self.last_tool_invoked = Some(("read_file".to_string(), first.to_string()));
+                                                    match serde_json::from_str::<Value>(&read_res) {
+                                                        Ok(Value::Object(map)) => {
+                                                            let human = format_read_output(&map);
+                                                            return Ok(Some(format!("AddContent returned: {}\n\n(Fallback read) {}", add_res, human)));
+                                                        }
+                                                        _ => return Ok(Some(format!("AddContent returned: {}\n\n(Fallback read) {}", add_res, read_res))),
+                                                    }
+                                                }
+                                                Err(e) => return Ok(Some(format!("Error adding content to '{}': {}. Also failed to read file: {}", first, add_res, e))),
+                                            }
+                                        } else {
+                                            return Ok(Some(format!("AddContent returned: {}\n\n(Fallback read not available)", add_res)));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // On error invoking add_content, attempt to read the file as fallback
+                                        if let Some(read_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("read_file")) {
+                                            match read_tool.invoke(first) {
+                                                Ok(read_res) => {
+                                                    self.last_tool_invoked = Some(("read_file".to_string(), first.to_string()));
+                                                    match serde_json::from_str::<Value>(&read_res) {
+                                                        Ok(Value::Object(map)) => {
+                                                            let human = format_read_output(&map);
+                                                            return Ok(Some(format!("Error adding content to '{}': {}\n\n(Fallback read) {}", first, e, human)));
+                                                        }
+                                                        _ => return Ok(Some(format!("Error adding content to '{}': {}\n\n(Fallback read) {}", first, e, read_res))),
+                                                    }
+                                                }
+                                                Err(read_err) => return Ok(Some(format!("Error adding content to '{}': {}. Also failed to read file: {}", first, e, read_err))),
+                                            }
+                                        } else {
+                                            return Ok(Some(format!("Error adding content to '{}': {}", first, e)));
+                                        }
+                                    }
+                                }
+                            } else {
+                                return Ok(Some("AddContent tool is not available.".to_string()));
+                            }
+                        }
+
                     if is_open_verb {
                         if self.config.confirm_before_tools {
                             // Preview and defer open
-                            self.pending_action = Some(("open_file".to_string(), first.to_string()));
-                            let msg = format!("Planned tool: 'open_file'\nInput: {}\nType !do to run, or !skip to cancel.", first);
+                            let msg = self.preview_destructive(input, "open_file", first);
                             return Ok(Some(msg));
                         }
                         if let Some(open_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("open_file")) {
@@ -1421,28 +1512,33 @@ impl Agent {
 
             if content_part.is_empty() {
                 format!(
-                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
                     file_part
                 )
             } else {
                 format!(
-                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nContent: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nContent: {}\nReply `yes` to proceed, or `no` to cancel.",
                     file_part, content_part
                 )
             }
         } else if tool_name.eq_ignore_ascii_case("open_file") {
             format!(
-                "rustline: I am going to open this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: I am going to open this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
                 tool_input
             )
         } else if tool_name.eq_ignore_ascii_case("delete_file") {
             format!(
-                "rustline: I am going to delete this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: I am going to delete this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
+                tool_input
+            )
+        } else if tool_name.eq_ignore_ascii_case("add_content") {
+            format!(
+                "rustline: I am going to add content to this file. Can you confirm?\nFile and Content: {}\nReply `yes` to proceed, or `no` to cancel.",
                 tool_input
             )
         } else {
             format!(
-                "rustline: Planned '{}' with input `{}`. Reply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: Planned '{}' with input `{}`. Reply `yes` to proceed, or `no` to cancel.",
                 tool_name, tool_input
             )
         };
@@ -1452,9 +1548,10 @@ impl Agent {
     }
 }
 
-// Build unified args for create_file tool from a user question.
+// Build arguments for add_content tool from a user question.
 // Returns something like: "filename.txt --content <text>" or just "filename.txt".
-fn build_create_args(question: &str) -> Option<String> {
+// Used ONLY for add_content operations.
+fn build_add_content_args(question: &str) -> Option<String> {
     let low = question.to_lowercase();
     let candidate = if let Some(tok) = extract_file_candidate(question) {
         tok
@@ -1488,7 +1585,7 @@ fn build_create_args(question: &str) -> Option<String> {
         }
     }
 
-    // Case 3: phrases like "with text", "with content", "content is", "text is", "write "
+    // Case 3: phrases like "with text", "with content", "content is", "text is", "write ", "to X <text>"
     let patterns = ["with text", "with content", "content is", "text is", "write "];
     for pat in patterns.iter() {
         if let Some(p) = low.find(pat) {
@@ -1499,7 +1596,65 @@ fn build_create_args(question: &str) -> Option<String> {
         }
     }
 
+    // Case 4: "add/append content to <filename> <text>" or "add/append <text> to <filename>"
+    // Handle both word orders by checking where content appears relative to filename
+    if low.contains("add ") || low.contains("append ") || low.contains("write ") || low.contains("insert ") {
+        let mut extracted_content: Option<String> = None;
+        
+        // First try: content after filename (e.g., "add content to AItest.txt this is text")
+        if let Some(pos) = question.find(&candidate) {
+            let after_filename = question[pos + candidate.len()..].trim();
+            if !after_filename.is_empty() && after_filename != "this" && after_filename != "is" {
+                extracted_content = Some(after_filename.to_string());
+            }
+        }
+        
+        // Second try: content before filename using " to " marker (e.g., "add this is text to AItest.txt")
+        if extracted_content.is_none() && low.contains(" to ") {
+            if let Some(to_pos) = low.find(" to ") {
+                let after_to = &question[to_pos + 4..];
+                // Verify filename appears after "to"
+                if after_to.contains(&candidate) {
+                    let verbs = ["add ", "append ", "write ", "insert "];
+                    for verb in verbs.iter() {
+                        if let Some(verb_pos) = low.find(verb) {
+                            let start = verb_pos + verb.len();
+                            let content = question[start..to_pos].trim();
+                            // Strip noise words like "content", "text"
+                            let content_clean = content
+                                .strip_prefix("content ").unwrap_or(content)
+                                .strip_prefix("text ").unwrap_or(content);
+                            if !content_clean.is_empty() && content_clean != &candidate {
+                                extracted_content = Some(content_clean.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If we found content, return with --content flag
+        if let Some(content) = extracted_content {
+            return Some(format!("{} --content {}", candidate, content));
+        }
+    }
+
     Some(candidate)
+}
+
+// Extract just the filename for create_file operations (no content).
+fn build_create_filename(question: &str) -> Option<String> {
+    if let Some(tok) = extract_file_candidate(question) {
+        return Some(tok);
+    }
+    
+    // Fallback: last non-empty token
+    question
+        .split_whitespace()
+        .rev()
+        .find(|t| !t.is_empty())
+        .map(|t| t.trim_matches(&[',', '.', '!', '?', '"', '\'' ][..]).to_string())
 }
 
 // Helper to run pending action consistently.

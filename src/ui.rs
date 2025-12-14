@@ -8,7 +8,6 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    text::Text,
     widgets::{Block, Borders, List, ListItem, ListState, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use serde::Deserialize;
@@ -1071,7 +1070,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         &mut scrollbar_state,
     );
 
-    let (input_display, input_style, input_border_color, input_title) = if app.waiting {
+    let (input_display, input_style, input_border_color, _input_title) = if app.waiting {
         (
             format!("⏳ {} (AI is processing...)", app.input),
             Style::default().fg(Color::Yellow),

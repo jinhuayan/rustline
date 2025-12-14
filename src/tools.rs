@@ -8,8 +8,6 @@ use walkdir::WalkDir;
 use std::collections::HashSet;
 use serde_json::json;
 
-use chrono::Local;
-
 pub type ToolResult = Result<String, Box<dyn Error>>;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -276,7 +274,10 @@ pub fn default_tools() -> Vec<DynTool> {
         Box::new(OpenWithTool),
         Box::new(LocateTool),
         Box::new(CreateFileTool),
+        Box::new(AddContentTool),
         Box::new(DeleteFileTool),
+        Box::new(WebFetchTool {}),
+        Box::new(WebSummaryTool {}),
     ]
 }
 
@@ -368,11 +369,9 @@ impl Tool for OpenWithTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/// Create file tool: creates a file at the given path (expands ~ and relative paths)
-/// and optionally writes provided content. Returns single-line JSON.
-/// Usage:
-///  - `!create_file <path>`
-///  - `!create_file <path> --content <text>`
+/// Create file tool: creates an empty file at the given path (expands ~ and relative paths).
+/// Returns single-line JSON.
+/// Usage: `!create_file <path>`
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct CreateFileTool;
 
@@ -380,39 +379,11 @@ impl Tool for CreateFileTool {
     fn name(&self) -> &str { "create_file" }
 
     fn description(&self) -> &str {
-        "Create a file at the given path. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>] [--content <text>]"
+        "Create an empty file at the given path. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>]"
     }
 
     fn invoke(&self, args: &str) -> ToolResult {
-        let input = args.trim();
-
-        // Parse args: support `--content` followed by the remainder as text
-        let mut path_part: String;
-        let mut content_part: Option<String> = None;
-
-        // Simple parser: support both forms:
-        // 1) "<path> --content <text>"
-        // 2) "--content <text>" (no path provided)
-        if let Some(idx) = input.find(" --content ") {
-            path_part = input[..idx].trim().to_string();
-            let rest = input[idx + " --content ".len()..].trim();
-            if !rest.is_empty() {
-                content_part = Some(rest.to_string());
-            }
-        } else if let Some(rest) = input.strip_prefix("--content ") {
-            // No path provided, only content
-            path_part = String::new();
-            let txt = rest.trim();
-            if !txt.is_empty() {
-                content_part = Some(txt.to_string());
-            }
-        } else if input == "--content" {
-            // No path and no content text
-            path_part = String::new();
-            content_part = Some(String::new());
-        } else {
-            path_part = input.to_string();
-        }
+        let mut path_part = args.trim().to_string();
 
         // Default behavior: if no path provided, create in ./rustline_temp with an auto-generated name
         if path_part.is_empty() {
@@ -445,9 +416,6 @@ impl Tool for CreateFileTool {
 
         match fs::File::create(&p) {
             Ok(_) => {
-                if let Some(text) = content_part {
-                    fs::write(&p, text.as_bytes())?;
-                }
                 let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                 let obj = json!({
                     "path": p.canonicalize()?.to_string_lossy().to_string(),
@@ -457,6 +425,91 @@ impl Tool for CreateFileTool {
                 Ok(serde_json::to_string(&obj)?)
             }
             Err(e) => Err(Box::new(e)),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+/// Add content tool: appends content to the end of an existing file.
+/// Returns single-line JSON.
+/// Usage: `!add_content <path> --content <text>`
+// ═══════════════════════════════════════════════════════════════════════════
+pub struct AddContentTool;
+
+impl Tool for AddContentTool {
+    fn name(&self) -> &str { "add_content" }
+
+    fn description(&self) -> &str {
+        "Append content to the end of a file. Usage: !add_content <path> --content <text>"
+    }
+
+    fn invoke(&self, args: &str) -> ToolResult {
+        let input = args.trim();
+        
+        // Parse: "<path> --content <text>" or "<path> --content" (with or without trailing content)
+        if let Some(idx) = input.find(" --content") {
+            let path_part = input[..idx].trim().to_string();
+            // Extract content after "--content" (may be empty if nothing follows)
+            let content = if idx + " --content".len() < input.len() {
+                input[idx + " --content".len()..].trim_start().to_string()
+            } else {
+                String::new()
+            };
+            
+            if path_part.is_empty() {
+                return Ok(json!({
+                    "error": "Path is required",
+                    "usage": "!add_content <path> --content <text>"
+                }).to_string());
+            }
+            
+            let p = match resolve_to_path(&path_part) {
+                Some(pb) => pb,
+                None => expand_path(&path_part),
+            };
+            
+            // File must exist
+            if !p.exists() {
+                let obj = json!({
+                    "path": p.to_string_lossy().to_string(),
+                    "success": false,
+                    "message": "File not found. Create it first with !create_file"
+                });
+                return Ok(serde_json::to_string(&obj)?);
+            }
+            
+            if p.is_dir() {
+                let obj = json!({
+                    "path": p.to_string_lossy().to_string(),
+                    "success": false,
+                    "message": "Path is a directory, not a file"
+                });
+                return Ok(serde_json::to_string(&obj)?);
+            }
+            
+            // Append content to file (supports empty content)
+            match fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(content.as_bytes())?;
+                    let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    let obj = json!({
+                        "path": p.canonicalize().unwrap_or(p).to_string_lossy().to_string(),
+                        "success": true,
+                        "size": size
+                    });
+                    Ok(serde_json::to_string(&obj)?)
+                }
+                Err(e) => Err(Box::new(e)),
+            }
+        } else {
+            Ok(json!({
+                "error": "Invalid arguments",
+                "usage": "!add_content <path> --content <text>"
+            }).to_string())
         }
     }
 }
