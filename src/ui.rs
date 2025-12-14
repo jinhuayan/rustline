@@ -15,6 +15,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
+use crate::PersistenceState;
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -53,6 +54,23 @@ pub struct App {
     pub current_time: String,
     /// Weather information (TODO: fetch from API)
     pub weather_info: WeatherInfo,
+    /// Current session information
+    pub current_session_id: Option<String>,
+    /// Session management mode (for UI state)
+    pub session_mode: SessionMode,
+    /// Available sessions for session management UI
+    pub available_sessions: Vec<crate::persistence::memory_store::SessionInfo>,
+    /// Selected session index in session management mode
+    pub selected_session_index: usize,
+    /// Current persistence state for display
+    pub persistence_state: crate::PersistenceState,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum SessionMode {
+    Normal,
+    SessionList,
+    SessionCreate,
 }
 
 #[derive(Clone)]
@@ -92,6 +110,11 @@ impl App {
             rendered_items_count: 0,
             current_time: Self::get_current_time(),
             weather_info: WeatherInfo::default(),
+            current_session_id: None,
+            session_mode: SessionMode::Normal,
+            available_sessions: Vec::new(),
+            selected_session_index: 0,
+            persistence_state: PersistenceState::Enabled, // Default, will be updated
         }
     }
 
@@ -164,8 +187,77 @@ impl App {
         self.show_welcome = false;
         self.messages.push(ChatMessage {
             role: MessageRole::System,
-            content: "Welcome to Rustline! Type your message and press Enter.".to_string(),
+            content: "Welcome to Rustline! Type your message and press Enter. Press F2 for session management.".to_string(),
         });
+    }
+
+    /// Enter session management mode
+    pub fn enter_session_mode(&mut self) {
+        self.session_mode = SessionMode::SessionList;
+        self.selected_session_index = 0;
+    }
+
+    /// Exit session management mode
+    pub fn exit_session_mode(&mut self) {
+        self.session_mode = SessionMode::Normal;
+    }
+
+    /// Update the current session ID
+    pub fn set_current_session(&mut self, session_id: Option<String>) {
+        self.current_session_id = session_id;
+    }
+
+    /// Update available sessions list
+    pub fn update_sessions(&mut self, sessions: Vec<crate::persistence::memory_store::SessionInfo>) {
+        self.available_sessions = sessions;
+        // Reset selection if it's out of bounds
+        if self.selected_session_index >= self.available_sessions.len() && !self.available_sessions.is_empty() {
+            self.selected_session_index = 0;
+        }
+    }
+
+    /// Move selection up in session list
+    pub fn select_previous_session(&mut self) {
+        if !self.available_sessions.is_empty() {
+            self.selected_session_index = if self.selected_session_index == 0 {
+                self.available_sessions.len() - 1
+            } else {
+                self.selected_session_index - 1
+            };
+        }
+    }
+
+    /// Move selection down in session list
+    pub fn select_next_session(&mut self) {
+        if !self.available_sessions.is_empty() {
+            self.selected_session_index = (self.selected_session_index + 1) % self.available_sessions.len();
+        }
+    }
+
+    /// Get the currently selected session
+    pub fn get_selected_session(&self) -> Option<&crate::persistence::memory_store::SessionInfo> {
+        self.available_sessions.get(self.selected_session_index)
+    }
+
+    /// Load messages from agent history
+    pub fn load_messages_from_agent(&mut self, agent_messages: &[crate::ollama::Message]) {
+        self.messages.clear();
+        for msg in agent_messages {
+            let role = match msg.role.as_str() {
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                _ => MessageRole::System,
+            };
+            self.messages.push(ChatMessage {
+                role,
+                content: msg.content.clone(),
+            });
+        }
+    }
+
+    /// Set the persistence state for display
+    pub fn set_persistence_state(&mut self, state: PersistenceState) {
+        self.persistence_state = state;
     }
 }
 
@@ -296,8 +388,13 @@ struct CurrentWeather {
     weather_code: i32,
 }
 
-/// Run the TUI application
+/// Run the TUI application (backward compatibility)
 pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
+    run_tui_with_persistence_state(agent, PersistenceState::Enabled).await
+}
+
+/// Run the TUI application with persistence state information
+pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state: PersistenceState) -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -306,6 +403,32 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.set_persistence_state(persistence_state.clone());
+    
+    // Add system message for persistence state if needed
+    match &persistence_state {
+        PersistenceState::FailedFallback(error) => {
+            app.add_message(MessageRole::System, format!(
+                "⚠️ Persistence initialization failed: {}. Running in non-persistent mode - your session will not be saved.",
+                error
+            ));
+        }
+        PersistenceState::Disabled => {
+            app.add_message(MessageRole::System, 
+                "ℹ️ Persistence is disabled. Your session will not be saved.".to_string()
+            );
+        }
+        PersistenceState::Enabled => {
+            // Load current session and update app state
+            if let Err(e) = agent.load_session(None) {
+                eprintln!("Warning: Failed to load session: {}. Starting with empty session.", e);
+            } else {
+                app.set_current_session(agent.get_current_session_id());
+                app.load_messages_from_agent(agent.get_history());
+            }
+        }
+    }
+    
     // Share a single Agent instance across all user inputs to preserve pending state
     let shared_agent = Arc::new(AsyncMutex::new(agent));
 
@@ -359,14 +482,93 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(std::time::Duration::from_millis(100))? {
             let evt = event::read()?;
             match evt {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match (&app.session_mode, key.code) {
+                    // Global quit commands
+                (_, KeyCode::Char('c')) if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         app.should_quit = true;
                     }
-                    KeyCode::Char('d') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    (_, KeyCode::Char('d')) if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
                         app.should_quit = true;
                     }
-                KeyCode::Enter => {
+                (_, KeyCode::Esc) => {
+                    if app.session_mode != SessionMode::Normal {
+                        app.exit_session_mode();
+                    } else {
+                        app.should_quit = true;
+                    }
+                }
+                
+                // Session management mode
+                (SessionMode::SessionList, KeyCode::Up) => {
+                    app.select_previous_session();
+                }
+                (SessionMode::SessionList, KeyCode::Down) => {
+                    app.select_next_session();
+                }
+                (SessionMode::SessionList, KeyCode::Enter) => {
+                    if let Some(selected_session) = app.get_selected_session() {
+                        let session_id = selected_session.id.clone();
+                        let mut agent_guard = shared_agent.lock().await;
+                        match agent_guard.switch_session(&session_id) {
+                            Ok(()) => {
+                                app.set_current_session(Some(session_id));
+                                app.load_messages_from_agent(agent_guard.get_history());
+                                app.exit_session_mode();
+                            }
+                            Err(e) => {
+                                app.add_message(MessageRole::System, format!("Failed to switch session: {}", e));
+                            }
+                        }
+                    }
+                }
+                (SessionMode::SessionList, KeyCode::Char('n')) => {
+                    // Create new session
+                    let mut agent_guard = shared_agent.lock().await;
+                    match agent_guard.create_new_session(Some("New Session".to_string())) {
+                        Ok(session_id) => {
+                            app.set_current_session(Some(session_id));
+                            app.messages.clear();
+                            app.exit_session_mode();
+                        }
+                        Err(e) => {
+                            app.add_message(MessageRole::System, format!("Failed to create session: {}", e));
+                        }
+                    }
+                }
+                (SessionMode::SessionList, KeyCode::Char('d')) => {
+                    // Delete selected session
+                    if let Some(selected_session) = app.get_selected_session() {
+                        let session_id = selected_session.id.clone();
+                        let mut agent_guard = shared_agent.lock().await;
+                        match agent_guard.delete_session(&session_id) {
+                            Ok(()) => {
+                                // Update sessions list
+                                if let Ok(sessions) = agent_guard.list_sessions() {
+                                    app.update_sessions(sessions);
+                                }
+                                // If we deleted the current session, clear messages
+                                if app.current_session_id.as_ref() == Some(&session_id) {
+                                    app.set_current_session(None);
+                                    app.messages.clear();
+                                }
+                            }
+                            Err(e) => {
+                                app.add_message(MessageRole::System, format!("Failed to delete session: {}", e));
+                            }
+                        }
+                    }
+                }
+                
+                // Normal mode
+                (SessionMode::Normal, KeyCode::F(2)) => {
+                    // Enter session management mode
+                    let mut agent_guard = shared_agent.lock().await;
+                    if let Ok(sessions) = agent_guard.list_sessions() {
+                        app.update_sessions(sessions);
+                        app.enter_session_mode();
+                    }
+                }
+                (SessionMode::Normal, KeyCode::Enter) => {
                     if app.show_welcome {
                         app.dismiss_welcome();
                     } else if !app.input.is_empty() && !app.waiting {
@@ -399,10 +601,10 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                 }
-                KeyCode::Char(c) => {
+                (SessionMode::Normal, KeyCode::Char(c)) => {
                     app.enter_char(c);
                 }
-                KeyCode::Backspace => {
+                (SessionMode::Normal, KeyCode::Backspace) => {
                     app.delete_char();
                 }
                 // Scroll controls for chat history
@@ -449,9 +651,6 @@ pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
                         app.list_state.select(Some(app.rendered_items_count - 1));
                         app.manual_scroll = true;
                     }
-                }
-                KeyCode::Esc => {
-                    app.should_quit = true;
                 }
                 _ => {}
                 }
@@ -509,11 +708,17 @@ fn ui(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    // Show session management screen if in session mode
+    if app.session_mode == SessionMode::SessionList {
+        render_session_management(f, app);
+        return;
+    }
+
     // Create three-section layout: status bar, chat history, input
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5), // Status bar
+            Constraint::Length(6), // Status bar (increased for persistence state)
             Constraint::Min(3),    // Chat history - reduced to allow small terminals
             Constraint::Length(3), // Input area
         ])
@@ -583,6 +788,18 @@ fn ui(f: &mut Frame, app: &mut App) {
         Color::Green
     };
 
+    let session_display = if let Some(ref session_id) = app.current_session_id {
+        format!("📁 {}", &session_id[..8.min(session_id.len())])
+    } else {
+        "📁 No session".to_string()
+    };
+
+    let (persistence_icon, persistence_text, persistence_color) = match &app.persistence_state {
+        PersistenceState::Enabled => ("💾", "Persistent", Color::Green),
+        PersistenceState::Disabled => ("🚫", "Non-persistent", Color::Yellow),
+        PersistenceState::FailedFallback(_) => ("⚠️", "Fallback mode", Color::Red),
+    };
+
     let time_lines = vec![
         Line::from(vec![
             Span::styled("🕐 ", Style::default().fg(Color::Blue)),
@@ -606,9 +823,19 @@ fn ui(f: &mut Frame, app: &mut App) {
             ),
         ]),
         Line::from(vec![Span::styled(
-            format!("💬 {} msgs", app.messages.len()),
-            Style::default().fg(Color::DarkGray),
+            &session_display,
+            Style::default().fg(Color::Magenta),
         )]),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", persistence_icon),
+                Style::default().fg(persistence_color),
+            ),
+            Span::styled(
+                persistence_text,
+                Style::default().fg(persistence_color),
+            ),
+        ]),
     ];
 
     let time_para = Paragraph::new(time_lines)
@@ -875,7 +1102,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     let input_title = if awaiting_confirm {
         "Input (Awaiting confirmation: yes/no, or !do/!skip)"
     } else {
-        "Input (Ctrl+C or Esc to quit)"
+        "Input (F2: Sessions, Ctrl+C/Esc: Quit)"
     };
 
     let input = Paragraph::new(input_display).style(input_style).block(
@@ -1257,3 +1484,129 @@ fn render_welcome_screen(f: &mut Frame) {
 
     f.render_widget(hint_para, main_chunks[2]);
 }
+
+/// Render the session management screen
+fn render_session_management(f: &mut Frame, app: &mut App) {
+    use ratatui::{
+        layout::{Alignment, Constraint, Direction, Layout},
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, List, ListItem, Paragraph},
+    };
+
+    let area = f.area();
+
+    // Create layout for session management
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Min(10),   // Session list
+            Constraint::Length(5), // Help text
+        ])
+        .split(area);
+
+    // Title
+    let title = Paragraph::new("Session Management")
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("📁 Sessions")
+                .title_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(title, main_chunks[0]);
+
+    // Session list
+    let sessions: Vec<ListItem> = app
+        .available_sessions
+        .iter()
+        .enumerate()
+        .map(|(i, session)| {
+            let is_current = app.current_session_id.as_ref() == Some(&session.id);
+            let is_selected = i == app.selected_session_index;
+            
+            let current_marker = if is_current { " (current)" } else { "" };
+            let session_text = format!(
+                "{} - {} msgs, created: {}{}",
+                &session.id[..8.min(session.id.len())],
+                session.message_count,
+                session.created_at.format("%Y-%m-%d %H:%M"),
+                current_marker
+            );
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_current {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(session_text).style(style)
+        })
+        .collect();
+
+    let sessions_list = List::new(sessions).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Available Sessions")
+            .title_style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .border_style(Style::default().fg(Color::Green))
+            .style(Style::default().bg(Color::Black)),
+    );
+
+    f.render_widget(sessions_list, main_chunks[1]);
+
+    // Help text
+    let help_lines = vec![
+        Line::from(vec![
+            Span::styled("↑/↓", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(": Navigate  ", Style::default().fg(Color::Gray)),
+            Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(": Switch  ", Style::default().fg(Color::Gray)),
+            Span::styled("N", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(": New Session", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::styled("D", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(": Delete  ", Style::default().fg(Color::Gray)),
+            Span::styled("Esc", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(": Back to Chat", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+
+    let help_para = Paragraph::new(help_lines)
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Controls")
+                .title_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .border_style(Style::default().fg(Color::Yellow))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    f.render_widget(help_para, main_chunks[2]);
+}
+
