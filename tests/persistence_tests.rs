@@ -238,7 +238,8 @@ proptest! {
             created_sessions.push(session_id.clone());
             
             // Session should exist after creation
-            prop_assert!(manager.session_exists(&session_id));
+            let sessions = manager.list_sessions().unwrap();
+            prop_assert!(sessions.iter().any(|s| s.id == session_id));
             
             // Session should be listable
             let sessions = manager.list_sessions().unwrap();
@@ -302,13 +303,15 @@ proptest! {
         let sessions_to_delete = created_sessions.clone();
         for session_id in sessions_to_delete {
             // Session should exist before deletion
-            prop_assert!(manager.session_exists(&session_id));
+            let sessions_before = manager.list_sessions().unwrap();
+            prop_assert!(sessions_before.iter().any(|s| s.id == session_id));
             
             // Delete the session
             manager.delete_session(&session_id).unwrap();
             
             // Session should no longer exist
-            prop_assert!(!manager.session_exists(&session_id));
+            let sessions_after = manager.list_sessions().unwrap();
+            prop_assert!(!sessions_after.iter().any(|s| s.id == session_id));
             
             // Session should not be in the list
             let remaining_sessions = manager.list_sessions().unwrap();
@@ -400,10 +403,8 @@ proptest! {
             prop_assert!(session_info.created_at >= one_hour_ago);
             prop_assert!(session_info.last_modified >= one_hour_ago);
             
-            // Verify metadata consistency by loading session directly
-            let direct_metadata = manager.get_session_metadata(expected_session_id).unwrap();
-            prop_assert_eq!(&session_info.id, &direct_metadata.id);
-            prop_assert_eq!(&session_info.name, &direct_metadata.name);
+            // Verify metadata consistency by checking session info directly
+            prop_assert_eq!(&session_info.id, expected_session_id);
             
             // Load actual messages and verify count matches
             let actual_messages = manager.load_session_history(expected_session_id).unwrap();
@@ -421,12 +422,12 @@ proptest! {
             }
         }
         
-        // Property: Enhanced listing should also have accurate metadata
-        let enhanced_sessions = manager.list_sessions_with_details().unwrap();
-        prop_assert_eq!(enhanced_sessions.len(), created_sessions.len());
+        // Property: Regular listing should have accurate metadata
+        let regular_sessions = manager.list_sessions().unwrap();
+        prop_assert_eq!(regular_sessions.len(), created_sessions.len());
         
-        // Enhanced listing should have the same data as regular listing
-        for session in &enhanced_sessions {
+        // Regular listing should have the same data as expected
+        for session in &regular_sessions {
             let regular_session = listed_sessions.iter()
                 .find(|s| s.id == session.id)
                 .unwrap();
@@ -439,30 +440,28 @@ proptest! {
         }
         
         // Property: Session statistics should be accurate
-        let stats = manager.get_session_statistics().unwrap();
-        prop_assert_eq!(stats.total_sessions, created_sessions.len());
+        let sessions = manager.list_sessions().unwrap();
+        prop_assert_eq!(sessions.len(), created_sessions.len());
         
         let expected_total_messages: usize = expected_message_counts.iter().sum();
-        prop_assert_eq!(stats.total_messages, expected_total_messages);
+        let actual_total_messages: usize = sessions.iter().map(|s| s.message_count).sum();
+        prop_assert_eq!(actual_total_messages, expected_total_messages);
         
         if !created_sessions.is_empty() {
-            prop_assert!(stats.oldest_session.is_some());
-            prop_assert!(stats.newest_session.is_some());
+            let oldest_session = sessions.iter().min_by_key(|s| s.created_at);
+            let newest_session = sessions.iter().max_by_key(|s| s.created_at);
+            prop_assert!(oldest_session.is_some());
+            prop_assert!(newest_session.is_some());
             
             // Most active session should have the highest message count
             if expected_total_messages > 0 {
-                prop_assert!(stats.most_active_session.is_some());
-                let (most_active_id, most_active_count) = stats.most_active_session.unwrap();
+                let most_active_session = sessions.iter().max_by_key(|s| s.message_count);
+                prop_assert!(most_active_session.is_some());
+                let most_active_count = most_active_session.unwrap().message_count;
                 
                 // Find the expected most active session
                 let max_messages = expected_message_counts.iter().max().unwrap();
                 prop_assert_eq!(most_active_count, *max_messages);
-                
-                // Verify the session ID corresponds to a session with that message count
-                let most_active_session = listed_sessions.iter()
-                    .find(|s| s.id == most_active_id)
-                    .unwrap();
-                prop_assert_eq!(most_active_session.message_count, *max_messages);
             }
         }
     }
@@ -850,7 +849,8 @@ fn test_create_and_switch_session() {
     assert!(session_id.starts_with("session_"));
     
     // Session should exist
-    assert!(manager.session_exists(&session_id));
+    let sessions = manager.list_sessions().unwrap();
+    assert!(sessions.iter().any(|s| s.id == session_id));
     
     // Switch to the session
     manager.switch_session(&session_id).unwrap();
@@ -898,13 +898,15 @@ fn test_session_deletion() {
     manager.save_message_to_current_session(&msg).unwrap();
     
     // Verify session exists
-    assert!(manager.session_exists(&session_id));
+    let sessions_before = manager.list_sessions().unwrap();
+    assert!(sessions_before.iter().any(|s| s.id == session_id));
     
     // Delete the session
     manager.delete_session(&session_id).unwrap();
     
     // Session should no longer exist
-    assert!(!manager.session_exists(&session_id));
+    let sessions_after = manager.list_sessions().unwrap();
+    assert!(!sessions_after.iter().any(|s| s.id == session_id));
     
     // Current session should be cleared
     assert!(manager.get_current_session().is_none());

@@ -191,12 +191,7 @@ impl Agent {
         Ok(())
     }
 
-    /// Save current conversation state to persistent storage
-    pub fn save_current_state(&self) -> Result<(), PersistenceError> {
-        // State is automatically saved as messages are added, so this is mostly a no-op
-        // but could be used for explicit save operations in the future
-        Ok(())
-    }
+
 
     /// Create a new session and optionally switch to it
     pub fn create_new_session(&mut self, name: Option<String>) -> Result<String, PersistenceError> {

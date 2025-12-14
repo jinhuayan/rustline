@@ -10,8 +10,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 fn cleanup_env_vars() {
     unsafe {
         env::remove_var("RUSTLINE_REACT_MAX_ITERATIONS");
-        env::remove_var("RUSTLINE_REACT_ITERATION_TIMEOUT");
-        env::remove_var("RUSTLINE_AUTO_SAVE_INTERVAL");
+
     }
 }
 
@@ -47,30 +46,12 @@ fn test_default_react_configuration() {
     
     // Test default values as specified in requirements
     assert_eq!(config.react_max_iterations, 3);
-    assert_eq!(config.react_iteration_timeout, Some(15));
     
     // Clean up after test
     cleanup_env_vars();
 }
 
-#[test]
-fn test_react_timeout_environment_variable() {
-    let _lock = TEST_MUTEX.lock().unwrap();
-    
-    // Clean up first
-    cleanup_env_vars();
-    
-    // Test timeout configuration via environment variable
-    unsafe {
-        env::set_var("RUSTLINE_REACT_ITERATION_TIMEOUT", "30");
-    }
-    
-    let config = Config::load();
-    assert_eq!(config.react_iteration_timeout, Some(30));
-    
-    // Clean up
-    cleanup_env_vars();
-}
+
 
 #[test]
 fn test_invalid_environment_variables_use_defaults() {
@@ -82,14 +63,12 @@ fn test_invalid_environment_variables_use_defaults() {
     // Test that invalid values fall back to defaults
     unsafe {
         env::set_var("RUSTLINE_REACT_MAX_ITERATIONS", "invalid");
-        env::set_var("RUSTLINE_REACT_ITERATION_TIMEOUT", "not_a_number");
     }
     
     let config = Config::load();
     
     // Should use defaults when parsing fails
     assert_eq!(config.react_max_iterations, 3);
-    assert_eq!(config.react_iteration_timeout, Some(15));
     
     // Clean up
     cleanup_env_vars();

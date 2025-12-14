@@ -50,10 +50,7 @@ impl Message {
         }
     }
     
-    /// Create a message for compatibility with existing code (without metadata)
-    pub fn simple(role: String, content: String) -> Self {
-        Self::new(role, content)
-    }
+
 }
 
 #[derive(Serialize)]

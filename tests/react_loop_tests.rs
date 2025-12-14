@@ -25,18 +25,7 @@ async fn test_agent_creation_with_custom_config() {
     let _cloned_agent = agent.clone();
 }
 
-#[tokio::test]
-async fn test_agent_creation_with_timeout_config() {
-    // Test that Agent can be created with custom timeout configuration
-    
-    let mut config = Config::default();
-    config.react_iteration_timeout = Some(30);
-    
-    let agent = Agent::new(config);
-    
-    // Verify agent was created successfully
-    assert_eq!(agent.get_history().len(), 0);
-}
+
 
 #[test]
 fn test_config_environment_variable_loading() {
@@ -45,7 +34,6 @@ fn test_config_environment_variable_loading() {
     // Test default values
     let config = Config::load();
     assert_eq!(config.react_max_iterations, 3); // Default value from requirements
-    assert_eq!(config.react_iteration_timeout, Some(15)); // Default timeout
     
     // Verify other configuration fields are properly loaded
     assert!(!config.ollama_base_url.is_empty());
@@ -85,44 +73,19 @@ async fn test_react_loop_bounds_validation() {
     }
 }
 
-#[tokio::test]
-async fn test_timeout_configuration_bounds() {
-    // Test that timeout configuration has reasonable bounds
-    
-    let test_timeouts = vec![Some(5), Some(15), Some(30), Some(60), None];
-    
-    for timeout in test_timeouts {
-        let mut config = Config::default();
-        config.react_iteration_timeout = timeout;
-        
-        let agent = Agent::new(config);
-        
-        // Verify agent was created successfully
-        assert_eq!(agent.get_history().len(), 0);
-        
-        if let Some(timeout_value) = timeout {
-            assert!(timeout_value > 0);
-            assert!(timeout_value <= 300); // Max 5 minutes seems reasonable
-        }
-    }
-}
+
 
 #[tokio::test]
 async fn test_performance_configuration_impact() {
     // Test that different configurations don't cause performance issues
     
-    let configs = vec![
-        (1, Some(5)),   // Minimal config
-        (3, Some(15)),  // Default config
-        (5, Some(30)),  // Extended config
-    ];
+    let configs = vec![1, 3, 5]; // Different iteration limits
     
-    for (max_iter, timeout) in configs {
+    for max_iter in configs {
         let start = Instant::now();
         
         let mut config = Config::default();
         config.react_max_iterations = max_iter;
-        config.react_iteration_timeout = timeout;
         
         let agent = Agent::new(config);
         
@@ -157,7 +120,6 @@ async fn test_agent_with_persistence_configuration() {
     // Create config with custom ReAct settings
     let mut config = Config::default();
     config.react_max_iterations = 4;
-    config.react_iteration_timeout = Some(25);
     
     // Create agent with persistence
     let agent = Agent::new_with_persistence(config, session_manager, preference_manager);
@@ -174,9 +136,6 @@ fn test_config_default_values_match_requirements() {
     
     // Requirements 2.1: max_iterations should default to 3
     assert_eq!(config.react_max_iterations, 3);
-    
-    // Requirements 2.3: timeout should default to 15 seconds
-    assert_eq!(config.react_iteration_timeout, Some(15));
     
     // Verify other important defaults
     assert_eq!(config.ollama_base_url, "http://localhost:11434");

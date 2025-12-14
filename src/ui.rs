@@ -69,7 +69,6 @@ pub struct App {
 pub enum SessionMode {
     Normal,
     SessionList,
-    SessionCreate,
 }
 
 #[derive(Clone)]
@@ -387,10 +386,7 @@ struct CurrentWeather {
     weather_code: i32,
 }
 
-/// Run the TUI application (backward compatibility)
-pub async fn run_tui(agent: Agent) -> Result<(), Box<dyn std::error::Error>> {
-    run_tui_with_persistence_state(agent, PersistenceState::Enabled).await
-}
+
 
 /// Run the TUI application with persistence state information
 pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state: PersistenceState) -> Result<(), Box<dyn std::error::Error>> {

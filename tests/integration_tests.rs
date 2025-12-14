@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::env;
+
 use tempfile::TempDir;
 
 /// Integration tests for TUI improvements
@@ -138,7 +138,7 @@ fn test_react_configuration_environment_variables() {
     let output = Command::new("cargo")
         .args(&["run", "--", "--help"])
         .env("RUSTLINE_REACT_MAX_ITERATIONS", "5")
-        .env("RUSTLINE_REACT_ITERATION_TIMEOUT", "20")
+
         .output()
         .expect("Failed to execute command");
     

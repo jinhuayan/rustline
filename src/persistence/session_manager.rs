@@ -8,15 +8,7 @@ use super::{
     memory_store::{MemoryStore, SessionInfo, SessionMetadata}
 };
 
-/// Statistics about all sessions
-#[derive(Debug, Clone)]
-pub struct SessionStatistics {
-    pub total_sessions: usize,
-    pub total_messages: usize,
-    pub oldest_session: Option<DateTime<Utc>>,
-    pub newest_session: Option<DateTime<Utc>>,
-    pub most_active_session: Option<(String, usize)>, // (session_id, message_count)
-}
+
 
 /// Manages session lifecycle and operations
 pub struct SessionManager {
@@ -95,25 +87,7 @@ impl SessionManager {
         Ok(sessions)
     }
 
-    /// List sessions with enhanced metadata display
-    pub fn list_sessions_with_details(&mut self) -> PersistenceResult<Vec<SessionInfo>> {
-        let mut sessions = self.list_sessions()?;
-        
-        // Sort by last modified (most recent first)
-        sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-        
-        // Enhance with additional metadata if available
-        for session in &mut sessions {
-            if let Ok(metadata) = self.get_cached_session_metadata(&session.id) {
-                // Update with cached metadata if it's more recent
-                if metadata.last_modified > session.last_modified {
-                    session.last_modified = metadata.last_modified;
-                }
-            }
-        }
-        
-        Ok(sessions)
-    }
+
 
     /// Switch to a different session
     pub fn switch_session(&mut self, session_id: &str) -> PersistenceResult<()> {
@@ -239,15 +213,7 @@ impl SessionManager {
         })
     }
 
-    /// Get session metadata for a specific session
-    pub fn get_session_metadata(&self, session_id: &str) -> PersistenceResult<SessionMetadata> {
-        self.memory_store.get_session_metadata(session_id)
-    }
 
-    /// Check if a session exists
-    pub fn session_exists(&self, session_id: &str) -> bool {
-        self.memory_store.session_exists(session_id)
-    }
 
     /// Save session metadata (private helper method)
     fn save_session_metadata(&mut self, metadata: &SessionMetadata) -> PersistenceResult<()> {
@@ -272,19 +238,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Get session metadata with caching
-    fn get_cached_session_metadata(&mut self, session_id: &str) -> PersistenceResult<SessionMetadata> {
-        // Check cache first
-        if let Some(cached_metadata) = self.metadata_cache.get(session_id) {
-            return Ok(cached_metadata.clone());
-        }
-        
-        // Load from storage and cache it
-        let metadata = self.memory_store.get_session_metadata(session_id)?;
-        self.metadata_cache.insert(session_id.to_string(), metadata.clone());
-        
-        Ok(metadata)
-    }
+
 
     /// Refresh metadata cache if it's stale
     fn refresh_metadata_cache_if_needed(&mut self) -> PersistenceResult<()> {
@@ -380,40 +334,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Get session statistics
-    pub fn get_session_statistics(&mut self) -> PersistenceResult<SessionStatistics> {
-        let sessions = self.list_sessions()?;
-        
-        let total_sessions = sessions.len();
-        let total_messages: usize = sessions.iter().map(|s| s.message_count).sum();
-        
-        let oldest_session = sessions.iter()
-            .min_by_key(|s| s.created_at)
-            .map(|s| s.created_at);
-            
-        let newest_session = sessions.iter()
-            .max_by_key(|s| s.created_at)
-            .map(|s| s.created_at);
-            
-        let most_active_session = sessions.iter()
-            .max_by_key(|s| s.message_count)
-            .map(|s| (s.id.clone(), s.message_count));
 
-        Ok(SessionStatistics {
-            total_sessions,
-            total_messages,
-            oldest_session,
-            newest_session,
-            most_active_session,
-        })
-    }
-
-    /// Clear metadata cache
-    pub fn clear_cache(&mut self) {
-        self.metadata_cache.clear();
-        self.cache_last_updated = None;
-        log::debug!("Cleared metadata cache");
-    }
 
     /// Create a session with a specific ID (for import purposes)
     /// This bypasses the normal unique ID generation

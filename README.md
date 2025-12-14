@@ -165,7 +165,7 @@ The Rustline repository is organized into logical modules, each responsible for 
   Handles persistent session storage, loading, and saving using local JSONL files.
 
 * `tests/`
-  Tests for checking each functionality works fine.
+  Tests for checking each file's functionality works well.
   
 
 This structure reflects a clean separation of responsibilities and makes the codebase approachable for both users and developers.

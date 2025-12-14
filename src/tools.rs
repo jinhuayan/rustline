@@ -305,22 +305,37 @@ impl Tool for OpenWithTool {
             return Ok("Usage: !open_file [-a AppName] <path>".to_string());
         }
 
-        // parse optional macOS -a AppName
+        // parse optional macOS -a AppName (only on macOS)
+        #[cfg(target_os = "macos")]
         let mut app: Option<String> = None;
+        #[cfg(target_os = "macos")]
         let mut path_str = input.to_string();
+        #[cfg(not(target_os = "macos"))]
+        let path_str = input.to_string();
 
-        let mut parts = input.split_whitespace();
-        if let Some(first) = parts.next() {
-            if first == "-a" {
-                if let Some(appname) = parts.next() {
-                    if let Some(rest) = parts.collect::<Vec<&str>>().join(" ").as_str().get(0..) {
-                        // rest is the path joined
-                        app = Some(appname.to_string());
-                        path_str = rest.to_string();
-                    }
+        #[cfg(target_os = "macos")]
+        {
+            let mut parts = input.split_whitespace();
+            if let Some(first) = parts.next() {
+                if first == "-a" {
+                    if let Some(appname) = parts.next() {
+                        if let Some(rest) = parts.collect::<Vec<&str>>().join(" ").as_str().get(0..) {
+                            // rest is the path joined
+                            app = Some(appname.to_string());
+                            path_str = rest.to_string();
+                        }
                     } else {
                         return Ok("Usage: !open_file -a <AppName> <path>".to_string());
+                    }
                 }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            // On non-macOS platforms, reject -a flag usage
+            if input.trim_start().starts_with("-a ") {
+                return Ok("The -a flag is only supported on macOS".to_string());
             }
         }
 
@@ -379,11 +394,34 @@ impl Tool for CreateFileTool {
     fn name(&self) -> &str { "create_file" }
 
     fn description(&self) -> &str {
-        "Create an empty file at the given path. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>]"
+        "Create a file at the given path with optional content. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>] [--content <text>]"
     }
 
     fn invoke(&self, args: &str) -> ToolResult {
-        let mut path_part = args.trim().to_string();
+        let input = args.trim();
+        let mut path_part = String::new();
+        let mut content = String::new();
+
+        // Parse: "<path> --content <text>" or just "<path>" or just "--content <text>"
+        if let Some(idx) = input.find(" --content") {
+            path_part = input[..idx].trim().to_string();
+            // Extract content after "--content"
+            content = if idx + " --content".len() < input.len() {
+                input[idx + " --content".len()..].trim_start().to_string()
+            } else {
+                String::new()
+            };
+        } else if input.starts_with("--content") {
+            // Just "--content <text>" with no path
+            content = if "--content".len() < input.len() {
+                input["--content".len()..].trim_start().to_string()
+            } else {
+                String::new()
+            };
+        } else {
+            // Just a path with no content
+            path_part = input.to_string();
+        }
 
         // Default behavior: if no path provided, create in ./rustline_temp with an auto-generated name
         if path_part.is_empty() {
@@ -414,7 +452,7 @@ impl Tool for CreateFileTool {
             return Ok(serde_json::to_string(&obj)?);
         }
 
-        match fs::File::create(&p) {
+        match fs::write(&p, &content) {
             Ok(_) => {
                 let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
                 let obj = json!({

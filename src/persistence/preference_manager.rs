@@ -150,6 +150,7 @@ impl PreferenceManager {
     }
     
     /// Reset preferences to defaults
+    #[allow(dead_code)]
     pub fn reset_to_defaults(&mut self) -> PersistenceResult<()> {
         self.current_preferences = UserPreferences::default();
         self.save_preferences()

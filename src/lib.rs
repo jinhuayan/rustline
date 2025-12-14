@@ -107,6 +107,5 @@ pub fn print_help() {
     println!("    RUSTLINE_CONFIRM_TOOLS        Confirm before tools: true|false (default: true)");
     println!("    RUSTLINE_PERSISTENCE_ENABLED  Enable persistence: true|false (default: true)");
     println!("    RUSTLINE_DATA_DIR             Data directory (default: ~/.rustline)");
-    println!("    RUSTLINE_AUTO_SAVE_INTERVAL   Auto-save interval in seconds (default: 30)");
-    println!("    RUSTLINE_DEFAULT_SESSION_NAME Default session name");
+
 }

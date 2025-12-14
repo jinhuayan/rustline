@@ -11,11 +11,8 @@ pub struct Config {
     // Persistence settings
     pub persistence_enabled: bool, // default: true
     pub data_dir: PathBuf, // default: ~/.rustline or ./data
-    pub auto_save_interval: Option<u64>, // seconds, default: Some(30)
-    pub default_session_name: Option<String>, // default: None
     // ReAct loop settings
     pub react_max_iterations: u32, // default: 3
-    pub react_iteration_timeout: Option<u64>, // seconds, default: Some(15)
 }
 
 impl Config {
@@ -57,23 +54,11 @@ impl Config {
                 }
             });
 
-        let auto_save_interval = env::var("RUSTLINE_AUTO_SAVE_INTERVAL")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .or(Some(30)); // Default to 30 seconds
-
-        let default_session_name = env::var("RUSTLINE_DEFAULT_SESSION_NAME").ok();
-
         // ReAct loop settings
         let react_max_iterations = env::var("RUSTLINE_REACT_MAX_ITERATIONS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(3); // Default to 3 iterations
-
-        let react_iteration_timeout = env::var("RUSTLINE_REACT_ITERATION_TIMEOUT")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .or(Some(15)); // Default to 15 seconds
 
         Config {
             ollama_base_url,
@@ -82,10 +67,7 @@ impl Config {
             confirm_before_tools,
             persistence_enabled,
             data_dir,
-            auto_save_interval,
-            default_session_name,
             react_max_iterations,
-            react_iteration_timeout,
         }
     }
 }
@@ -107,10 +89,7 @@ impl Default for Config {
             confirm_before_tools: true,
             persistence_enabled: true,
             data_dir,
-            auto_save_interval: Some(30),
-            default_session_name: None,
             react_max_iterations: 3,
-            react_iteration_timeout: Some(15),
         }
     }
 }

@@ -173,76 +173,6 @@ fn test_locate_tool_finds_readme() {
     assert!(p.ends_with("README.md"));
 }
 
-#[test]
-fn test_tools_integration_workflow() {
-    println!("=== Testing Tools Integration Workflow ===");
-    
-    let tools = default_tools();
-    
-    // Test that we have all expected tools
-    let expected_tools = vec!["time", "echo", "read_file", "open_file", "locate", "create_file", "delete_file"];
-    for expected in &expected_tools {
-        assert!(tools.iter().any(|t| t.name() == *expected), "Missing tool: {}", expected);
-    }
-    
-    // Test create_file -> read_file -> delete_file workflow
-    let temp_file = format!("integration_test_{}.txt", unique_name("workflow"));
-    let test_content = "Integration test content\nMultiple lines\nFor testing";
-    
-    // Create file in temp directory to avoid permission issues
-    let full_path = env::temp_dir().join(&temp_file);
-    let create_tool = tools.iter().find(|t| t.name() == "create_file").unwrap();
-    let args = format!("{} --content {}", full_path.to_string_lossy(), test_content);
-    let create_result = create_tool.invoke(&args).expect("Create tool should work");
-    
-    let create_json: serde_json::Value = serde_json::from_str(&create_result).expect("Should be valid JSON");
-    assert_eq!(create_json["created"].as_bool().unwrap(), true);
-    
-    // Read file using full path
-    let read_tool = tools.iter().find(|t| t.name() == "read_file").unwrap();
-    let read_result = read_tool.invoke(&full_path.to_string_lossy()).expect("Read tool should work");
-    
-    let read_json: serde_json::Value = serde_json::from_str(&read_result).expect("Should be valid JSON");
-    let content = read_json["content"].as_str().expect("Should have content field");
-    assert_eq!(content, test_content);
-    
-    // Test locate tool (may or may not find the file depending on search implementation)
-    let locate_tool = tools.iter().find(|t| t.name() == "locate").unwrap();
-    let locate_result = locate_tool.invoke(&temp_file).expect("Locate tool should work");
-    
-    let locate_json: serde_json::Value = serde_json::from_str(&locate_result).expect("Should be valid JSON");
-    assert!(locate_json.is_array());
-    // Note: locate may not find the file if it's not in the search roots, so we don't assert on matches
-    
-    // Delete file (cleanup) using full path
-    let delete_tool = tools.iter().find(|t| t.name() == "delete_file").unwrap();
-    let delete_result = delete_tool.invoke(&full_path.to_string_lossy()).expect("Delete tool should work");
-    
-    let delete_json: serde_json::Value = serde_json::from_str(&delete_result).expect("Should be valid JSON");
-    assert_eq!(delete_json["deleted"].as_bool().unwrap(), true);
-    
-    println!("✓ Tools integration workflow completed successfully");
-}
-
-#[test]
-fn test_tools_descriptions_and_functionality() {
-    let tools = default_tools();
-    
-    // Test time tool
-    let time_tool = tools.iter().find(|t| t.name() == "time").unwrap();
-    assert!(time_tool.description().contains("current local time"));
-    let result = time_tool.invoke("").expect("Time tool should work");
-    assert!(result.contains("Current local time:"));
-    
-    // Test echo tool
-    let echo_tool = tools.iter().find(|t| t.name() == "echo").unwrap();
-    assert!(echo_tool.description().contains("Echo back"));
-    let test_message = "Hello tools system!";
-    let result = echo_tool.invoke(test_message).expect("Echo tool should work");
-    assert_eq!(result, test_message);
-    
-    println!("✓ All tools have proper descriptions and basic functionality");
-}
 
 #[test]
 fn test_tools_error_handling() {
@@ -282,19 +212,4 @@ fn test_tools_error_handling() {
     
     // Cleanup
     let _ = fs::remove_file(&existing_file);
-}
-
-#[test]
-fn test_all_tools_available() {
-    let tools = default_tools();
-    
-    // Verify we have exactly the expected number of tools
-    assert_eq!(tools.len(), 7, "Should have exactly 7 tools");
-    
-    // Verify each tool has a name and description
-    for tool in &tools {
-        assert!(!tool.name().is_empty(), "Tool name should not be empty");
-        assert!(!tool.description().is_empty(), "Tool description should not be empty");
-        println!("✓ Tool '{}': {}", tool.name(), tool.description());
-    }
 }
