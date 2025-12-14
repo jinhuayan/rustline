@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a94ecc68ca976c4189b70849ddb46cee70fdf546f86d643922edf9bc4916729b # shrinks to messages = [Message { role: "a", content: "", timestamp: 2025-12-13T00:23:11.482030Z, message_id: "912245f0-b7c3-454a-8ab2-104655037db6", tool_invocation: None }]
+cc 27712921704a008da80aa0b63b2e41c426115a27767fd7dbd48a15897897627c # shrinks to sessions_data = [(None, []), (None, [Message { role: "a", content: "", timestamp: 2025-12-13T00:39:02.749994600Z, message_id: "48debe28-57a3-4645-b191-c87e19932e07", tool_invocation: None }])], model_preference = "-", confirm_preference = false
+cc 2d1d2ff0c0c89a1556f76f741f093e2d6a40ccb44d2f7cbe881ac112467c40bf # shrinks to thought_text = None, answer_text = "\u{b}", action_name = "A", action_input = ""
+cc fc2fecabbbf3babb1c7d58d9d6639cac988fef3761e1266a28d68f2751ead601 # shrinks to thought_text = None, answer_text = " ", action_name = "a", action_input = ""
+cc 85e859149ef7e9d64510011e4dc9619c026029f59c9dbb260b15665ac45d479f # shrinks to thought_text = None, answer_text = "A ", action_name = "a", action_input = ""
+cc 63b69be7931f8027366adf1810c634437541a683e6eb95ed620431eb70856721 # shrinks to thought_text = None, answer_text = "A", action_name = "A", action_input = "\u{b}"
