@@ -508,8 +508,8 @@ impl Agent {
         if name_part == "confirm" {
             let val = args.to_lowercase();
             match val.as_str() {
-                "on" | "true" | "yes" => { self.config.confirm_before_tools = true; return Ok(Some("Confirm-before-tools: ON".to_string())); }
-                "off" | "false" | "no" => { self.config.confirm_before_tools = false; return Ok(Some("Confirm-before-tools: OFF".to_string())); }
+                "on" => { self.config.confirm_before_tools = true; return Ok(Some("Confirm-before-tools: ON".to_string())); }
+                "off" => { self.config.confirm_before_tools = false; return Ok(Some("Confirm-before-tools: OFF".to_string())); }
                 _ => return Ok(Some("Usage: !confirm <on|off>".to_string())),
             }
         }
@@ -617,7 +617,6 @@ impl Agent {
         if let Ok(home) = std::env::var("HOME") {
             search_roots.push(home);
         }
-        // avoid hardcoded user-specific folders; rely on cwd/project root and HOME
 
         let search_paths = format!("[{}]", search_roots.iter().map(|s| format!("\"{}\"", s)).collect::<Vec<_>>().join(", "));
 
@@ -1369,8 +1368,7 @@ impl Agent {
                     if is_open_verb {
                         if self.config.confirm_before_tools {
                             // Preview and defer open
-                            self.pending_action = Some(("open_file".to_string(), first.to_string()));
-                            let msg = format!("Planned tool: 'open_file'\nInput: {}\nType !do to run, or !skip to cancel.", first);
+                            let msg = self.preview_destructive(input, "open_file", first);
                             return Ok(Some(msg));
                         }
                         if let Some(open_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("open_file")) {
@@ -1421,28 +1419,28 @@ impl Agent {
 
             if content_part.is_empty() {
                 format!(
-                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
                     file_part
                 )
             } else {
                 format!(
-                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nContent: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                    "rustline: I am going to create this file. Can you confirm?\nFile: {}\nContent: {}\nReply `yes` to proceed, or `no` to cancel.",
                     file_part, content_part
                 )
             }
         } else if tool_name.eq_ignore_ascii_case("open_file") {
             format!(
-                "rustline: I am going to open this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: I am going to open this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
                 tool_input
             )
         } else if tool_name.eq_ignore_ascii_case("delete_file") {
             format!(
-                "rustline: I am going to delete this file. Can you confirm?\nFile: {}\nReply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: I am going to delete this file. Can you confirm?\nFile: {}\nReply `yes` to proceed, or `no` to cancel.",
                 tool_input
             )
         } else {
             format!(
-                "rustline: Planned '{}' with input `{}`. Reply `!do` to proceed, or `!skip` to cancel.",
+                "rustline: Planned '{}' with input `{}`. Reply `yes` to proceed, or `no` to cancel.",
                 tool_name, tool_input
             )
         };
