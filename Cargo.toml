@@ -15,12 +15,8 @@ textwrap = "0.16"
 futures-util = "0.3"
 walkdir = "2"
 
-[dependencies.scraper]
-version = "0.14"
-
-[dependencies.ureq]
-version = "2"
-features = ["tls"]
+scraper = "0.14"
+ureq = { version = "2", features = ["tls"] }
 thiserror = "1.0"
 log = "0.4"
 uuid = { version = "1.0", features = ["v4"] }

@@ -98,7 +98,7 @@ impl Tool for ReadFileTool {
 
 //Helper function to read a file and truncate its contents if too large
 // The triggering size for truncation is 100 KB
-fn read_and_truncate(path: &Path) -> ToolResult {
+pub fn read_and_truncate(path: &Path) -> ToolResult {
     // Return a JSON object as a single-line string: { path, size, truncated, content }
     let abs = path.canonicalize()?;
     match fs::read_to_string(&abs) {
@@ -309,32 +309,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-//Helper function to read a file and truncate its contents if too large
-pub fn read_and_truncate(path: &Path) -> ToolResult {
-    // Return a JSON object as a single-line string: { path, size, truncated, content }
-    let abs = path.canonicalize()?;
-    match fs::read_to_string(&abs) {
-        Ok(contents) => {
-            const MAX_BYTES: usize = 100_000; // 100 KB
-            let size = contents.len();
-            let (truncated, content_str) = if size > MAX_BYTES {
-                (true, contents[..MAX_BYTES].to_string())
-            } else {
-                (false, contents)
-            };
 
-            let obj = json!({
-                "path": abs.to_string_lossy(),
-                "size": size,
-                "truncated": truncated,
-                "content": content_str
-            });
-
-            Ok(serde_json::to_string(&obj)?)
-        }
-        Err(e) => Err(Box::new(e)),
-    }
-}
 
 /// All built-in tools available to the agent.
 pub fn default_tools() -> Vec<DynTool> {
@@ -349,33 +324,7 @@ pub fn default_tools() -> Vec<DynTool> {
     ]
 }
 
-/// Locate tool: searches configured roots for files matching a basename and returns a JSON array
-/// of matches: [{"path": "...", "size": 123}, ...]
-pub struct LocateTool;
 
-impl Tool for LocateTool {
-    fn name(&self) -> &str {
-        "locate"
-    }
-
-    fn description(&self) -> &str {
-        "Locate files by basename in configured roots. Usage: !locate <filename>"
-    }
-
-    fn invoke(&self, args: &str) -> ToolResult {
-        let input = args.trim();
-        if input.is_empty() {
-            return Ok("Usage: !locate <filename>".to_string());
-        }
-
-        let matches = locate_matches(input);
-        let results: Vec<serde_json::Value> = matches
-            .into_iter()
-            .map(|(pb, size)| json!({"path": pb.to_string_lossy().to_string(), "size": size}))
-            .collect();
-        Ok(serde_json::to_string(&results)?)
-    }
-}
 
 /// Open file tool: opens a file in a native application.
 /// Usage:
@@ -728,27 +677,3 @@ impl Tool for WebSummaryTool {
     }
 }
 
-
-// ═══════════════════════════════════════════════════════════════════════════
-// All built-in tools available to the agent.
-// ═══════════════════════════════════════════════════════════════════════════
-pub fn default_tools() -> Vec<DynTool> {
-    vec![
-        Box::new(TimeTool),
-        Box::new(EchoTool),
-        Box::new(ReadFileTool),
-        Box::new(OpenWithTool),
-        Box::new(LocateTool),
-        Box::new(CreateFileTool),
-        Box::new(DeleteFileTool),
-        Box::new(WebFetchTool {}),
-        Box::new(WebSummaryTool {}),
-    ]
-}
-
-
-
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Unit tests for tools
-// ═══════════════════════════════════════════════════════════════════════════

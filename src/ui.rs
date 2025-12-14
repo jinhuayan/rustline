@@ -608,7 +608,7 @@ pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state:
                     app.delete_char();
                 }
                 // Scroll controls for chat history
-                KeyCode::Up => {
+                (SessionMode::Normal, KeyCode::Up) => {
                     if app.rendered_items_count > 0 {
                         let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
                         let next = cur.saturating_sub(1);
@@ -616,7 +616,7 @@ pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state:
                         app.manual_scroll = true;
                     }
                 }
-                KeyCode::Down => {
+                (SessionMode::Normal, KeyCode::Down) => {
                     if app.rendered_items_count > 0 {
                         let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
                         let next = (cur + 1).min(app.rendered_items_count.saturating_sub(1));
@@ -624,7 +624,7 @@ pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state:
                         app.manual_scroll = true;
                     }
                 }
-                KeyCode::PageUp => {
+                (SessionMode::Normal, KeyCode::PageUp) => {
                     if app.rendered_items_count > 0 {
                         let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
                         let next = cur.saturating_sub(5);
@@ -632,7 +632,7 @@ pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state:
                         app.manual_scroll = true;
                     }
                 }
-                KeyCode::PageDown => {
+                (SessionMode::Normal, KeyCode::PageDown) => {
                     if app.rendered_items_count > 0 {
                         let cur = app.list_state.selected().unwrap_or(app.rendered_items_count - 1);
                         let next = (cur + 5).min(app.rendered_items_count.saturating_sub(1));
@@ -640,13 +640,13 @@ pub async fn run_tui_with_persistence_state(mut agent: Agent, persistence_state:
                         app.manual_scroll = true;
                     }
                 }
-                KeyCode::Home => {
+                (SessionMode::Normal, KeyCode::Home) => {
                     if app.rendered_items_count > 0 {
                         app.list_state.select(Some(0));
                         app.manual_scroll = true;
                     }
                 }
-                KeyCode::End => {
+                (SessionMode::Normal, KeyCode::End) => {
                     if app.rendered_items_count > 0 {
                         app.list_state.select(Some(app.rendered_items_count - 1));
                         app.manual_scroll = true;
