@@ -174,7 +174,7 @@ impl SessionManager {
         // If session doesn't exist, create it first
         if !self.memory_store.session_exists(session_id) {
             // Create the session with default metadata
-            let metadata = SessionMetadata {
+            let _metadata = SessionMetadata {
                 id: session_id.to_string(),
                 name: None,
                 created_at: Utc::now(),
@@ -251,7 +251,6 @@ impl SessionManager {
 
     /// Save session metadata (private helper method)
     fn save_session_metadata(&mut self, metadata: &SessionMetadata) -> PersistenceResult<()> {
-        use std::fs;
         use std::io::Write;
         use super::atomic_write;
         

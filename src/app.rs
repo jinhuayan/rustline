@@ -6,7 +6,6 @@ use crate::config::Config;
 use crate::persistence::{
     session_manager::SessionManager,
     preference_manager::PreferenceManager,
-    PersistenceError,
 };
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
