@@ -25,48 +25,6 @@ pub trait Tool: Send + Sync {
 
 pub type DynTool = Box<dyn Tool>;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Time tool: returns the current local time.
-// ═══════════════════════════════════════════════════════════════════════════
-pub struct TimeTool;
-
-impl Tool for TimeTool {
-    fn name(&self) -> &str {
-        "time"
-    }
-
-    fn description(&self) -> &str {
-        "Show the current local time. Usage: !time"
-    }
-
-    fn invoke(&self, _args: &str) -> ToolResult {
-        let now = Local::now();
-        Ok(format!(
-            "Current local time: {}",
-            now.format("%Y-%m-%d %H:%M:%S")
-        ))
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Echo tool: echoes back the given text.
-// ═══════════════════════════════════════════════════════════════════════════
-pub struct EchoTool;
-
-impl Tool for EchoTool {
-    fn name(&self) -> &str {
-        "echo"
-    }
-
-    fn description(&self) -> &str {
-        "Echo back the given text. Usage: !echo <text>"
-    }
-
-    fn invoke(&self, args: &str) -> ToolResult {
-        Ok(args.trim().to_string())
-    }
-}
-
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Read file tool: reads and returns the contents of a file.
@@ -314,8 +272,6 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 /// All built-in tools available to the agent.
 pub fn default_tools() -> Vec<DynTool> {
     vec![
-        Box::new(TimeTool),
-        Box::new(EchoTool),
         Box::new(ReadFileTool),
         Box::new(OpenWithTool),
         Box::new(LocateTool),
