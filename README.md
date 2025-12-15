@@ -255,6 +255,23 @@ This project highlighted both the strengths and challenges of building AI system
 
 In conclusion, Rustline demonstrates that Rust is a good choice for building local-first LLM agents. The project fills a gap in the current Rust ecosystem and provides educational value for developers interested in systems-level AI tooling. Future work includes expanding the tool ecosystem, improving configuration flexibility, and supporting additional local inference backends.
 
+### Limitations and Future Improvements
+
+One important challenge encountered during this project is **hallucination**, a well-known limitation of Large Language Models. Despite operating entirely locally, the LLM may still generate incorrect assumptions, fabricate tool usage plans, or produce reasoning steps that are logically inconsistent. This behavior is inherent to probabilistic language models and is not specific to Rustline.
+
+In the current implementation, Rustline mitigates hallucination risks by restricting the agent to a predefined and explicitly registered set of tools. Tool execution is fully controlled by the host application, ensuring that the model cannot perform arbitrary or unsafe actions. However, the agent still relies on the model’s internal reasoning to decide *when* and *how* to invoke these tools, which may lead to suboptimal or unnecessary actions.
+
+Another challenge lies in the **agent control strategy**. The ReAct-style loop used in this project demonstrates how reasoning and acting can be interleaved, but it does not guarantee optimal decision-making. The agent currently lacks explicit verification mechanisms, confidence estimation, or rollback strategies when reasoning errors occur.
+
+Future improvements may include:
+- Adding structured output validation to detect invalid or inconsistent reasoning steps
+- Introducing confidence scoring or self-reflection prompts to reduce hallucination
+- Implementing guardrails such as tool invocation limits or verification passes
+- Exploring alternative agent control strategies beyond basic ReAct loops
+
+These limitations highlight that building reliable AI agents is not solely a modeling problem, but also a **systems and control problem**. Addressing these challenges represents an important direction for future work and further experimentation.
+
+
 ---
 
 ## 10. Video Slide Presentation
