@@ -1434,6 +1434,22 @@ impl Agent {
                             }
                         }
 
+                    // Handle delete intent before open/read to avoid falling through
+                    if is_delete_verb {
+                        if self.config.confirm_before_tools {
+                            let msg = self.preview_destructive(input, "delete_file", first);
+                            return Ok(Some(msg));
+                        }
+                        if let Some(del_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("delete_file")) {
+                            match del_tool.invoke(first).await {
+                                Ok(del_res) => { self.last_tool_invoked = Some(("delete_file".to_string(), first.to_string())); return Ok(Some(del_res)); },
+                                Err(e) => return Ok(Some(format!("Error deleting '{}': {}", first, e))),
+                            }
+                        } else {
+                            return Ok(Some("Delete tool is not available.".to_string()));
+                        }
+                    }
+
                     if is_open_verb {
                         if self.config.confirm_before_tools {
                             // Preview and defer open
