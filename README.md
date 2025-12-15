@@ -5,7 +5,7 @@
 | Name       | Student Number | Preferred Email                                                   |
 | ---------- | -------------- | ----------------------------------------------------------------- |
 | Yiming Liu | 1011337402     | yimingpaul.liu@mail.utoronto.ca |
-| Jinhua Yan | 1012858686     | jinhua.yan@mail.utoronto.ca |
+| Jinhua Yan | 1012858686     | sudojinhua.yan@mail.utoronto.ca |
 | Jiayan Xu  | 1012882436     | jiayan.xu@mail.utoronto.ca  |
 
 ---
