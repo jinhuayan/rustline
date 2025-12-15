@@ -10,7 +10,7 @@ pub struct Config {
     pub confirm_before_tools: bool, // require confirmation before running tools
     // Persistence settings
     pub persistence_enabled: bool, // default: true
-    pub data_dir: PathBuf, // default: ~/.rustline or ./data
+    pub data_dir: PathBuf, // default: ~/.history
     // ReAct loop settings
     pub react_max_iterations: u32, // default: 3
 }
@@ -43,16 +43,7 @@ impl Config {
 
         let data_dir = env::var("RUSTLINE_DATA_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                // Default to ~/.rustline if HOME is available, otherwise ./data
-                if let Ok(home) = env::var("HOME") {
-                    PathBuf::from(home).join(".rustline")
-                } else if let Ok(userprofile) = env::var("USERPROFILE") {
-                    PathBuf::from(userprofile).join(".rustline")
-                } else {
-                    PathBuf::from("./data")
-                }
-            });
+            .unwrap_or_else(|_| PathBuf::from("./history"));
 
         // ReAct loop settings
         let react_max_iterations = env::var("RUSTLINE_REACT_MAX_ITERATIONS")
@@ -74,13 +65,7 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let data_dir = if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".rustline")
-        } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-            PathBuf::from(userprofile).join(".rustline")
-        } else {
-            PathBuf::from("./data")
-        };
+        let data_dir = PathBuf::from("./history");
 
         Config {
             ollama_base_url: "http://localhost:11434".to_string(),

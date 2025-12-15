@@ -233,7 +233,7 @@ No environment variables or external configuration files are required. All featu
 
 * Overall system architecture and project coordination
 * Ollama CLI and HTTP integration
-* Streaming token handling and error recovery
+* Persistance storage for sessions
 
 ### Jinhua Yan
 

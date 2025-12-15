@@ -142,14 +142,7 @@ async fn run_cli_loop(mut agent: Agent) -> Result<(), Box<dyn std::error::Error>
 
 /// Get the base directory for persistence storage (fallback for legacy mode)
 fn get_persistence_base_dir() -> PathBuf {
-    // Use the same logic as Config::default() for consistency
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".rustline")
-    } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-        PathBuf::from(userprofile).join(".rustline")
-    } else {
-        PathBuf::from("./data")
-    }
+    PathBuf::from("./history")
 }
 
 /// Handle session management commands
