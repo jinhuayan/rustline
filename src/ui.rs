@@ -1162,15 +1162,13 @@ fn pretty_json_if_possible(s: &str) -> String {
                     if let Some(summary) = obj.get("summary").and_then(|m| m.as_str()) {
                         return summary.to_string();
                     }
-                    // If this is a web_fetch result, show title + text or fallback to URL
+                    // If this is a web_fetch result, show title + URL (no raw content) and summary when available
                     if let Some(title) = obj.get("title").and_then(|t| t.as_str()) {
-                        let text = obj.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        if !text.is_empty() {
-                            return format!("{}\n\n{}", title, text);
-                        } else if !title.is_empty() {
-                            let url = obj.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                            return format!("{}\n[From: {}]", title, url);
+                        let url = obj.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                        if let Some(summary) = obj.get("summary").and_then(|s| s.as_str()) {
+                            return format!("{}\n[{}]\n\nSummary:\n{}", title, url, summary);
                         }
+                        return format!("{}\n[{}]", title, url);
                     }
                     // Fallback: just show text if available
                     if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {

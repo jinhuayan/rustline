@@ -479,7 +479,7 @@ impl Agent {
     /// Manual tool invocation via `!` commands in the REPL.
     /// Returns Ok(Some(reply)) if handled as a tool command,
     /// Ok(None) if not a tool command.
-    fn try_run_tool(&mut self, input: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    async fn try_run_tool(&mut self, input: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         if !input.starts_with('!') {
             return Ok(None);
         }
@@ -513,7 +513,7 @@ impl Agent {
             if let Some((tool, inp)) = self.pending_action.take() {
                 // Execute the previously planned action
                 if let Some(tool_impl) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case(&tool)) {
-                    match tool_impl.invoke(&inp) {
+                    match tool_impl.invoke(&inp).await {
                         Ok(res) => return Ok(Some(res)),
                         Err(e) => return Ok(Some(format!("Tool `{}` error: {}", tool, e))),
                     }
@@ -526,7 +526,7 @@ impl Agent {
                 // Temporarily disable confirmation to execute the pending precheck actions
                 let was_confirm = self.config.confirm_before_tools;
                 self.config.confirm_before_tools = false;
-                let res = match self.strict_precheck_response(&pending)? {
+                let res = match self.strict_precheck_response(&pending).await? {
                     Some(r) => r,
                     None => "Nothing to run.".to_string(),
                 };
@@ -571,8 +571,10 @@ impl Agent {
             .iter()
             .find(|t| t.name().eq_ignore_ascii_case(&name_part))
         {
-            let result = tool.invoke(args)?;
-            Ok(Some(format!("[tool:{}]\n{}", name_part, result)))
+            match tool.invoke(args).await {
+                Ok(result) => Ok(Some(format!("[tool:{}]\n{}", name_part, result))),
+                Err(e) => Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+            }
         } else {
             Ok(Some(format!(
                 "Unknown tool: {name}\nUse !tools to list available tools.",
@@ -646,14 +648,14 @@ impl Agent {
         // If there's a pending destructive action, interpret natural-language confirmation.
         if self.pending_action.is_some() {
             match interpret_confirmation(input) {
-                Some(true) => { return Ok(self.run_pending_action().unwrap_or_else(|e| e)); }
+                Some(true) => { return Ok(self.run_pending_action().await.unwrap_or_else(|e| e)); }
                 Some(false) => { self.pending_action = None; return Ok("Pending action cleared.".to_string()); }
                 None => { /* carry on */ }
             }
         }
 
         // Manual `!` tools (bypass LLM & ReAct).
-        if let Some(tool_reply) = self.try_run_tool(input)? {
+        if let Some(tool_reply) = self.try_run_tool(input).await? {
             println!("[ReAct] User invoked manual tool command.");
             self.log_history("user", input.to_string());
             self.log_history("assistant", tool_reply.clone());
@@ -667,7 +669,7 @@ impl Agent {
         //     * For locate/where/find queries: return the locate JSON array immediately.
         //     * For read/open queries: call `read_file` on the first matched path and return its result.
         // - If `locate` returns no matches, return a clear "No file found" message and DO NOT call the LLM.
-        if let Some(precheck) = self.strict_precheck_response(input)? {
+        if let Some(precheck) = self.strict_precheck_response(input).await? {
             return Ok(precheck);
         }
 
@@ -767,7 +769,7 @@ impl Agent {
                         .find(|t| t.name().eq_ignore_ascii_case(&tool_name));
 
                     let observation = if let Some(tool_impl) = maybe_tool {
-                        match tool_impl.invoke(&planned.input) {
+                        match tool_impl.invoke(&planned.input).await {
                             Ok(res) => { 
                                 self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone()));
                                 // Persist tool invocation as part of conversation history
@@ -867,7 +869,7 @@ impl Agent {
         if self.pending_action.is_some() {
             match interpret_confirmation(input) {
                 Some(true) => {
-                    let res = self.run_pending_action().unwrap_or_else(|e| e);
+                    let res = self.run_pending_action().await.unwrap_or_else(|e| e);
                     on_chunk(&res);
                     return Ok(res);
                 }
@@ -882,14 +884,14 @@ impl Agent {
         }
 
         // Manual `!` tools (bypass LLM & ReAct).
-        if let Some(tool_reply) = self.try_run_tool(input)? {
+        if let Some(tool_reply) = self.try_run_tool(input).await? {
             on_chunk(&tool_reply);
             self.log_history("user", input.to_string());
             self.log_history("assistant", tool_reply.clone());
             return Ok(tool_reply);
         }
 
-        if let Some(precheck) = self.strict_precheck_response(input)? {
+        if let Some(precheck) = self.strict_precheck_response(input).await? {
             on_chunk(&precheck);
             return Ok(precheck);
         }
@@ -962,7 +964,7 @@ impl Agent {
                         .find(|t| t.name().eq_ignore_ascii_case(&tool_name));
 
                     let observation = if let Some(tool_impl) = maybe_tool {
-                        match tool_impl.invoke(&planned.input) {
+                        match tool_impl.invoke(&planned.input).await {
                             Ok(res) => { 
                                 self.last_tool_invoked = Some((tool_name.clone(), planned.input.clone()));
                                 // Persist tool invocation as part of conversation history
@@ -1183,7 +1185,7 @@ fn contains_negation_for_create(low: &str) -> bool {
 
 // Shared strict precheck to avoid duplication between streaming and non-streaming paths.
 impl Agent {
-    fn strict_precheck_response(&mut self, input: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    async fn strict_precheck_response(&mut self, input: &str) -> Result<Option<String>, Box<dyn std::error::Error>> {
         // If configured for assisted mode, disable auto-precheck and let the agent plan.
         if !self.config.precheck_mode.eq_ignore_ascii_case("strict") {
             return Ok(None);
@@ -1217,8 +1219,11 @@ impl Agent {
             }
             if !url.is_empty() {
                 if wants_summary {
+                    if std::env::var("RUSTLINE_DEBUG").is_ok() {
+                        eprintln!("[strict-precheck] URL detected → web_summary: {}", url);
+                    }
                     if let Some(tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("web_summary")) {
-                        match tool.invoke(&url) {
+                        match tool.invoke(&url).await {
                             Ok(res) => {
                                 // Format the web_summary result before returning
                                 if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&res) {
@@ -1234,12 +1239,25 @@ impl Agent {
                         return Ok(Some("Web summary tool is not available.".to_string()));
                     }
                 } else if wants_fetch || !wants_summary {
+                    if std::env::var("RUSTLINE_DEBUG").is_ok() {
+                        eprintln!("[strict-precheck] URL detected → web_fetch: {}", url);
+                    }
                     if let Some(tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("web_fetch")) {
-                        match tool.invoke(&url) {
+                        match tool.invoke(&url).await {
                             Ok(res) => {
-                                // Format the web_fetch result before returning
+                                // Format the web_fetch result and also include a web_summary if available
                                 if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&res) {
-                                    return Ok(Some(format_web_fetch_output(&map)));
+                                    let mut out = format_web_fetch_output(&map);
+                                    if let Some(sum_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("web_summary")) {
+                                        if let Ok(sum_res) = sum_tool.invoke(&url).await {
+                                            if let Ok(Value::Object(sm)) = serde_json::from_str::<Value>(&sum_res) {
+                                                if let Some(summary) = sm.get("summary").and_then(|s| s.as_str()) {
+                                                    out = format!("{}\n\nSummary:\n{}", out, summary);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return Ok(Some(out));
                                 }
                                 return Ok(Some(res));
                             },
@@ -1268,7 +1286,7 @@ impl Agent {
 
             if let Some(filename) = build_create_filename(input) {
                 if let Some(create_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("create_file")) {
-                    match create_tool.invoke(&filename) {
+                    match create_tool.invoke(&filename).await {
                         Ok(res) => return Ok(Some(res)),
                         Err(e) => return Ok(Some(format!("Error creating file '{}': {}", filename, e))),
                     }
@@ -1281,58 +1299,15 @@ impl Agent {
             }
         }
 
-        // Handle delete requests similarly: preview under confirmation, otherwise run delete_file on first located match.
-        if is_delete_verb {
-            // Extract candidate filename/path similar to other flows
-            let candidate = if let Some(tok) = extract_file_candidate(input) {
-                tok
-            } else {
-                input
-                    .split_whitespace()
-                    .rev()
-                    .find(|t| !t.is_empty())
-                    .map(|t| t.trim_matches(&[',', '.', '!', '?', '"', '\'' ][..]).to_string())
-                    .unwrap_or_default()
-            };
-
-            if candidate.is_empty() {
-                return Ok(None);
-            }
-
-            // Locate first match for delete safety preview
-            let locate_tool = match self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("locate")) { Some(t) => t, None => return Ok(Some("Locate tool is not available.".to_string())) };
-            let loc_res = match locate_tool.invoke(&candidate) { Ok(r) => r, Err(e) => return Ok(Some(format!("Error locating '{}': {}", candidate, e))) };
-            if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(&loc_res) {
-                    if let Some(first) = arr.first().and_then(|v| v.get("path")).and_then(|p| p.as_str()) {
-                        if self.config.confirm_before_tools {
-                            self.pending_action = Some(("delete_file".to_string(), first.to_string()));
-                            let msg = self.preview_destructive(input, "delete_file", first);
-                            return Ok(Some(msg));
-                        }
-                        if let Some(del_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("delete_file")) {
-                            match del_tool.invoke(first) {
-                                Ok(res) => { self.last_tool_invoked = Some(("delete_file".to_string(), first.to_string())); return Ok(Some(res)); },
-                                Err(e) => return Ok(Some(format!("Error deleting '{}': {}", first, e))),
-                            }
-                        } else {
-                            return Ok(Some("Delete tool is not available.".to_string()));
-                        }
-                    } else {
-                        return Ok(Some(format!("No file named '{}' found under search roots.", candidate)));
-                    }
-                }
-        }
-
-        // Extract candidate for general file operations (locate, read, open, modify)
-        let candidate = if let Some(tok) = extract_file_candidate(input) {
-            tok
-        } else {
-            input
+        // Determine a candidate filename from input if present
+        let candidate: String = match extract_file_candidate(input) {
+            Some(c) => c,
+            None => input
                 .split_whitespace()
                 .rev()
                 .find(|t| !t.is_empty())
                 .map(|t| t.trim_matches(&[',', '.', '!', '?', '"', '\'' ][..]).to_string())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         };
 
         if candidate.is_empty() {
@@ -1344,7 +1319,7 @@ impl Agent {
             None => return Ok(Some("Locate tool is not available.".to_string())),
         };
 
-        let loc_res = match locate_tool.invoke(&candidate) {
+        let loc_res = match locate_tool.invoke(&candidate).await {
             Ok(r) => r,
             Err(e) => return Ok(Some(format!("Error locating '{}': {}", candidate, e))),
         };
@@ -1376,6 +1351,7 @@ impl Agent {
                                         format!("{} --content ", first)
                                     }
                                 } else {
+
                                     format!("{} --content ", first)
                                 }
                             } else {
@@ -1389,7 +1365,7 @@ impl Agent {
                             }
 
                             if let Some(add_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("add_content")) {
-                                match add_tool.invoke(&add_args) {
+                                match add_tool.invoke(&add_args).await {
                                     Ok(add_res) => {
                                         self.last_tool_invoked = Some(("add_content".to_string(), add_args.clone()));
                                         // If add_content returned JSON with { "success": true }, treat as success.
@@ -1410,7 +1386,7 @@ impl Agent {
 
                                         // Fallback: attempt to read the file and return its contents with add error info.
                                         if let Some(read_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("read_file")) {
-                                            match read_tool.invoke(first) {
+                                            match read_tool.invoke(first).await {
                                                 Ok(read_res) => {
                                                     self.last_tool_invoked = Some(("read_file".to_string(), first.to_string()));
                                                     match serde_json::from_str::<Value>(&read_res) {
@@ -1430,7 +1406,7 @@ impl Agent {
                                     Err(e) => {
                                         // On error invoking add_content, attempt to read the file as fallback
                                         if let Some(read_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("read_file")) {
-                                            match read_tool.invoke(first) {
+                                            match read_tool.invoke(first).await {
                                                 Ok(read_res) => {
                                                     self.last_tool_invoked = Some(("read_file".to_string(), first.to_string()));
                                                     match serde_json::from_str::<Value>(&read_res) {
@@ -1453,6 +1429,22 @@ impl Agent {
                             }
                         }
 
+                    // Handle delete intent before open/read to avoid falling through
+                    if is_delete_verb {
+                        if self.config.confirm_before_tools {
+                            let msg = self.preview_destructive(input, "delete_file", first);
+                            return Ok(Some(msg));
+                        }
+                        if let Some(del_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("delete_file")) {
+                            match del_tool.invoke(first).await {
+                                Ok(del_res) => { self.last_tool_invoked = Some(("delete_file".to_string(), first.to_string())); return Ok(Some(del_res)); },
+                                Err(e) => return Ok(Some(format!("Error deleting '{}': {}", first, e))),
+                            }
+                        } else {
+                            return Ok(Some("Delete tool is not available.".to_string()));
+                        }
+                    }
+
                     if is_open_verb {
                         if self.config.confirm_before_tools {
                             // Preview and defer open
@@ -1460,7 +1452,7 @@ impl Agent {
                             return Ok(Some(msg));
                         }
                         if let Some(open_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("open_file")) {
-                            match open_tool.invoke(first) {
+                            match open_tool.invoke(first).await {
                                 Ok(open_res) => { self.last_tool_invoked = Some(("open_file".to_string(), first.to_string())); return Ok(Some(open_res)); },
                                 Err(e) => return Ok(Some(format!("Error opening '{}': {}", first, e))),
                             }
@@ -1468,7 +1460,7 @@ impl Agent {
                     }
 
                     if let Some(read_tool) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case("read_file")) {
-                        match read_tool.invoke(first) {
+                        match read_tool.invoke(first).await {
                             Ok(read_res) => {
                                 self.last_tool_invoked = Some(("read_file".to_string(), first.to_string()));
                                 match serde_json::from_str::<Value>(&read_res) {
@@ -1654,10 +1646,10 @@ fn build_create_filename(question: &str) -> Option<String> {
 
 // Helper to run pending action consistently.
 impl Agent {
-    fn run_pending_action(&mut self) -> Result<String, String> {
+    async fn run_pending_action(&mut self) -> Result<String, String> {
         if let Some((tool, inp)) = self.pending_action.take() {
             if let Some(tool_impl) = self.tools.iter().find(|t| t.name().eq_ignore_ascii_case(&tool)) {
-                match tool_impl.invoke(&inp) {
+                match tool_impl.invoke(&inp).await {
                     Ok(res) => { self.last_tool_invoked = Some((tool.clone(), inp.clone())); Ok(res) }
                     Err(e) => Err(format!("Tool `{}` error: {}", tool, e)),
                 }
@@ -1726,20 +1718,8 @@ fn format_read_output(map: &serde_json::Map<String, Value>) -> String {
 
 fn format_web_fetch_output(map: &serde_json::Map<String, Value>) -> String {
     let title = map.get("title").and_then(|v| v.as_str()).unwrap_or("(no title)");
-    let text = map.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    
-    const MAX_TEXT_CHARS: usize = 1000;
-    let text_display = if text.len() > MAX_TEXT_CHARS {
-        format!("{}...", &text[..MAX_TEXT_CHARS])
-    } else {
-        text.to_string()
-    };
-    
-    if text_display.is_empty() {
-        format!("{}\n\n(No text content extracted)", title)
-    } else {
-        format!("{}\n\n{}", title, text_display)
-    }
+    let url = map.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    format!("Title: {}\nURL: {}", title, url)
 }
 
 // Interpret natural-language confirmation: returns Some(true) for affirmative, Some(false) for negative, None otherwise.

@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::fs;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -7,18 +6,21 @@ use std::process::Command;
 use walkdir::WalkDir;
 use std::collections::HashSet;
 use serde_json::json;
+use reqwest::Client;
+use async_trait::async_trait;
 
-pub type ToolResult = Result<String, Box<dyn Error>>;
+pub type ToolResult = Result<String, Box<dyn std::error::Error + Send + Sync>>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tools for Rustline Agent
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Common interface for all tools. Every tool must follow this trait.
+#[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn invoke(&self, args: &str) -> ToolResult;
+    async fn invoke(&self, args: &str) -> ToolResult;
 }
 
 pub type DynTool = Box<dyn Tool>;
@@ -26,10 +28,11 @@ pub type DynTool = Box<dyn Tool>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Read file tool: reads and returns the contents of a file.
-/// Usage: `!read_file <path>` or called by the agent.
+// Usage: `!read_file <path>` or called by the agent.
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct ReadFileTool;
 
+#[async_trait]
 impl Tool for ReadFileTool {
     fn name(&self) -> &str {
         "read_file"
@@ -39,7 +42,7 @@ impl Tool for ReadFileTool {
         "Read a file's contents. Usage: !read_file <path> (returns truncated content if large)"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         if input.is_empty() {
             return Ok("Usage: !read_file <path_or_filename>".to_string());
@@ -87,6 +90,7 @@ pub fn read_and_truncate(path: &Path) -> ToolResult {
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct LocateTool;
 
+#[async_trait]
 impl Tool for LocateTool {
     fn name(&self) -> &str {
         "locate"
@@ -96,7 +100,7 @@ impl Tool for LocateTool {
         "Locate files by basename in configured roots. Usage: !locate <filename>"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         if input.is_empty() {
             return Ok("Usage: !locate <filename>".to_string());
@@ -267,7 +271,7 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 
 
 
-/// All built-in tools available to the agent.
+// All built-in tools available to the agent.
 pub fn default_tools() -> Vec<DynTool> {
     vec![
         Box::new(ReadFileTool),
@@ -282,14 +286,15 @@ pub fn default_tools() -> Vec<DynTool> {
 }
 
 
-
-/// Open file tool: opens a file in a native application.
-/// Usage:
-///  - `!open_file <path>` opens with the system default application.
-///  - On macOS: `!open_file -a <AppName> <path>` opens with specified application (e.g., Notes).
+// ═══════════════════════════════════════════════════════════════════════════
+// Open file tool: opens a file in a native application.
+// Usage:
+//  - `!open_file <path>` opens with the system default application.
+//  - On macOS: `!open_file -a <AppName> <path>` opens with specified application (e.g., Notes).
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct OpenWithTool;
 
+#[async_trait]
 impl Tool for OpenWithTool {
     fn name(&self) -> &str {
         "open_file"
@@ -299,7 +304,7 @@ impl Tool for OpenWithTool {
         "Open a file with the system default app, or on macOS use -a <AppName> to choose an app. Usage: !open_file [-a AppName] <path>"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         if input.is_empty() {
             return Ok("Usage: !open_file [-a AppName] <path>".to_string());
@@ -384,12 +389,13 @@ impl Tool for OpenWithTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/// Create file tool: creates an empty file at the given path (expands ~ and relative paths).
-/// Returns single-line JSON.
-/// Usage: `!create_file <path>`
+// Create file tool: creates an empty file at the given path (expands ~ and relative paths).
+// Returns single-line JSON.
+// Usage: `!create_file <path>`
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct CreateFileTool;
 
+#[async_trait]
 impl Tool for CreateFileTool {
     fn name(&self) -> &str { "create_file" }
 
@@ -397,7 +403,7 @@ impl Tool for CreateFileTool {
         "Create a file at the given path with optional content. If no path is provided, saves into ./rustline_temp. Usage: !create_file [<path>] [--content <text>]"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         let mut path_part = String::new();
         let mut content = String::new();
@@ -468,12 +474,13 @@ impl Tool for CreateFileTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/// Add content tool: appends content to the end of an existing file.
-/// Returns single-line JSON.
-/// Usage: `!add_content <path> --content <text>`
+// Add content tool: appends content to the end of an existing file.
+// Returns single-line JSON.
+// Usage: `!add_content <path> --content <text>`
 // ═══════════════════════════════════════════════════════════════════════════
 pub struct AddContentTool;
 
+#[async_trait]
 impl Tool for AddContentTool {
     fn name(&self) -> &str { "add_content" }
 
@@ -481,7 +488,7 @@ impl Tool for AddContentTool {
         "Append content to the end of a file. Usage: !add_content <path> --content <text>"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         
         // Parse: "<path> --content <text>" or "<path> --content" (with or without trailing content)
@@ -553,11 +560,12 @@ impl Tool for AddContentTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/// Delete file tool: deletes a file at the given path. Returns single-line JSON.
-/// Usage: `!delete_file <path>`
-/// ═══════════════════════════════════════════════════════════════════════════
+// Delete file tool: deletes a file at the given path. Returns single-line JSON.
+// Usage: `!delete_file <path>`
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct DeleteFileTool;
 
+#[async_trait]
 impl Tool for DeleteFileTool {
     fn name(&self) -> &str { "delete_file" }
 
@@ -565,7 +573,7 @@ impl Tool for DeleteFileTool {
         "Delete a file at the given path. Usage: !delete_file <path>"
     }
 
-    fn invoke(&self, args: &str) -> ToolResult {
+    async fn invoke(&self, args: &str) -> ToolResult {
         let input = args.trim();
         if input.is_empty() {
             return Ok("Usage: !delete_file <path>".to_string());
@@ -609,10 +617,11 @@ impl Tool for DeleteFileTool {
 pub struct WebFetchTool {}
 
 // This tool fetches a web page by URL and returns a JSON object with title, text snippet, status, and size.
+#[async_trait]
 impl Tool for WebFetchTool {
     fn name(&self) -> &str { "web_fetch" }
     fn description(&self) -> &str { "Fetch a web page by URL and return title + text snippet as JSON" }
-    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    async fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let url = input.trim();
         if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
         // Basic URL check
@@ -679,14 +688,15 @@ impl Tool for WebFetchTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/// Web summary tool: fetches a URL and returns a brief summary (title + key sentences) as JSON.
-/// ═══════════════════════════════════════════════════════════════════════════
+// Web summary tool: fetches a URL and uses LLM to generate an intelligent summary.
+// ═══════════════════════════════════════════════════════════════════════════
 pub struct WebSummaryTool {}
 
+#[async_trait]
 impl Tool for WebSummaryTool {
     fn name(&self) -> &str { "web_summary" }
-    fn description(&self) -> &str { "Fetch a URL and return a brief summary (title + key sentences) as JSON" }
-    fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    fn description(&self) -> &str { "Fetch a URL and use LLM to generate an intelligent summary" }
+    async fn invoke(&self, input: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let url = input.trim();
         if url.is_empty() { return Ok("{\"error\":\"URL required\"}".to_string()); }
         if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -694,25 +704,80 @@ impl Tool for WebSummaryTool {
         }
         // Use WebFetchTool to get the page content
         let fetch = WebFetchTool {};
-        let res = fetch.invoke(url)?;
+        let res = fetch.invoke(url).await?;
         let v: serde_json::Value = serde_json::from_str(&res).unwrap_or(serde_json::json!({"url": url, "status": 0, "title": "", "text": ""}));
         let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
         let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
         let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(0) as u16;
 
-        let sentences: Vec<&str> = text
-            .split(|c| c == '.' || c == '!' || c == '?')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let mut summary_parts = Vec::new();
-        for s in sentences.iter().take(5) { summary_parts.push(*s); }
-        let mut summary = if summary_parts.is_empty() { text.lines().take(5).collect::<Vec<_>>().join(" ") } else { summary_parts.join(". ") };
-        // Cap summary length to ~600 chars for TUI readability
-        const MAX_SUMMARY: usize = 600;
-        if summary.len() > MAX_SUMMARY {
-            summary = format!("{}…", &summary[..MAX_SUMMARY]);
+        // If fetch failed or no content, return simple response
+        if status == 0 || text.is_empty() {
+            return Ok(serde_json::json!({
+                "url": url,
+                "status": status,
+                "title": title,
+                "summary": "No content available to summarize",
+            }).to_string());
         }
+
+        // Use LLM to generate intelligent summary
+        let client = Client::new();
+        
+        // Get config from environment or use defaults
+        let base_url = std::env::var("OLLAMA_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        // Prefer project default, then Ollama env, then sensible fallback
+        let model = std::env::var("RUSTLINE_DEFAULT_MODEL")
+            .or_else(|_| std::env::var("OLLAMA_MODEL"))
+            .unwrap_or_else(|_| "gemma3".to_string());
+        
+        if std::env::var("RUSTLINE_DEBUG").is_ok() {
+            eprintln!("[WebSummaryTool] Calling LLM at {} with model {}", base_url, model);
+        }
+        let prompt = format!(
+            "Summarize the following web page content in 2-3 concise sentences (max 600 characters). \
+            Focus on the main points and key information.\n\nTitle: {}\n\nContent:\n{}",
+            title, text
+        );
+        
+        let summary = match crate::ollama::chat_single_turn(&client, &base_url, &model, &prompt).await {
+            Ok(llm_summary) => {
+                if std::env::var("RUSTLINE_DEBUG").is_ok() {
+                    eprintln!("[WebSummaryTool] LLM returned summary ({} chars)", llm_summary.len());
+                }
+                // Cap at 600 chars as specified
+                const MAX_SUMMARY: usize = 600;
+                if llm_summary.len() > MAX_SUMMARY {
+                    format!("{}…", &llm_summary[..MAX_SUMMARY])
+                } else {
+                    llm_summary
+                }
+            }
+            Err(e) => {
+                // Surface the failure explicitly so callers/users know LLM was not used.
+                if std::env::var("RUSTLINE_DEBUG").is_ok() {
+                    eprintln!("[WebSummaryTool] LLM summarization failed: {}", e);
+                }
+                let sentences: Vec<&str> = text
+                    .split(|c| c == '.' || c == '!' || c == '?')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .take(5)
+                    .collect();
+                let fallback = if sentences.is_empty() {
+                    text.lines().take(5).collect::<Vec<_>>().join(" ")
+                } else {
+                    sentences.join(". ")
+                };
+                const MAX_SUMMARY: usize = 600;
+                let trimmed = if fallback.len() > MAX_SUMMARY {
+                    format!("{}…", &fallback[..MAX_SUMMARY])
+                } else {
+                    fallback
+                };
+                format!("[LLM failed: {}] Fallback summary: {}", e, trimmed)
+            }
+        };
 
         let json = serde_json::json!({
             "url": url,
