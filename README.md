@@ -276,10 +276,10 @@ These limitations highlight that building reliable AI agents is not solely a mod
 
 ## 10. Video Slide Presentation
 
-Presentation URL HERE
+[Presentation URL HERE](https://youtu.be/f9EDbXR8mZE)
 
 ---
 
 ## 11. Video Demo
 
-Demo URL HERE
+[Demo URL HERE](https://youtu.be/rhjskZhb3JQ)
