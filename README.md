@@ -1,4 +1,5 @@
-# Rustline: A Rust-Based Local LLM Agent CLI
+# Final Report
+## Rustline: A Rust-Based Local LLM Agent CLI
 
 ## 1. Team Information
 
